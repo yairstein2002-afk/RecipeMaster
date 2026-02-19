@@ -1,0 +1,123 @@
+/* אפקט זכוכית (Glassmorphism) בשילוב מצב לילה - עיצוב פרימיום! */
+body {
+    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+    /* רקע של גרדיאנט כהה שזז לאט */
+    background: linear-gradient(135deg, #0f2027, #203a43, #2c5364);
+    background-size: 400% 400%;
+    animation: gradientBG 15s ease infinite;
+    color: #ffffff;
+    margin: 0;
+    padding: 0;
+    direction: rtl; /* יישור לימין לעברית */
+    /* מרכוז מושלם לאמצע המסך */
+    min-height: 100vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+/* האנימציה של הרקע */
+@keyframes gradientBG {
+    0% { background-position: 0% 50%; }
+    50% { background-position: 100% 50%; }
+    100% { background-position: 0% 50%; }
+}
+
+/* כרטיסיית הטופס - זה מה שיוצר את הזכוכית */
+.form-container {
+    background: rgba(255, 255, 255, 0.05); /* רקע שקוף כמעט לגמרי */
+    backdrop-filter: blur(15px); /* הטשטוש שיוצר את מראה הזכוכית החלבית */
+    -webkit-backdrop-filter: blur(15px);
+    width: 100%;
+    max-width: 400px;
+    padding: 40px;
+    border-radius: 20px; /* פינות עגולות רכות */
+    box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.37); /* הצללה עמוקה מתחת לזכוכית */
+    border: 1px solid rgba(255, 255, 255, 0.18); /* מסגרת דקה ומבריקה */
+    text-align: center;
+}
+
+.form-container h2 {
+    color: #ffffff;
+    margin-top: 0;
+    margin-bottom: 30px;
+    font-size: 28px;
+    letter-spacing: 1px;
+    text-shadow: 0 2px 4px rgba(0,0,0,0.5); /* צל לטקסט שייבלוט מהרקע */
+}
+
+/* שדות קלט שקופים למחצה */
+input[type="text"],
+input[type="email"],
+input[type="password"] {
+    width: 100%;
+    padding: 15px;
+    margin: 10px 0 25px 0;
+    background-color: rgba(255, 255, 255, 0.1);
+    border: none;
+    border-bottom: 2px solid rgba(255, 255, 255, 0.3);
+    color: #ffffff;
+    border-radius: 8px 8px 0 0;
+    box-sizing: border-box;
+    font-size: 16px;
+    transition: all 0.3s ease;
+}
+
+/* צבע הטקסט של המילה "שם משתמש" שבתוך השדה */
+input::placeholder {
+    color: rgba(255, 255, 255, 0.6);
+}
+
+/* כשהמשתמש לוחץ על השדה להתחיל לכתוב */
+input[type="text"]:focus,
+input[type="email"]:focus,
+input[type="password"]:focus {
+    background-color: rgba(255, 255, 255, 0.15);
+    border-bottom: 2px solid #00f2fe; /* פס ניאון תכלת מודרני */
+    outline: none;
+}
+
+/* כפתור כניסה מרחף וזוהר */
+button {
+    width: 100%;
+    padding: 15px;
+    background: linear-gradient(45deg, #4facfe 0%, #00f2fe 100%);
+    color: #0f2027;
+    border: none;
+    border-radius: 25px; /* כפתור בצורת גלולה */
+    cursor: pointer;
+    font-size: 18px;
+    font-weight: bold;
+    text-transform: uppercase;
+    letter-spacing: 1.5px;
+    transition: all 0.3s ease;
+    box-shadow: 0 4px 15px rgba(79, 172, 254, 0.4);
+    margin-top: 10px;
+}
+
+/* אפקט מרחף על הכפתור */
+button:hover {
+    transform: translateY(-3px); /* עולה טיפה למעלה */
+    box-shadow: 0 8px 25px rgba(79, 172, 254, 0.6); /* ההילה מתרחבת */
+}
+
+/* קישורים למטה */
+a { 
+    color: #00f2fe; 
+    text-decoration: none; 
+    transition: 0.3s; 
+    font-weight: bold;
+}
+a:hover { 
+    text-shadow: 0 0 8px rgba(0, 242, 254, 0.6); 
+}
+
+/* הודעות שגיאה והצלחה תואמות לרקע הכהה */
+.alert { 
+    padding: 15px; 
+    border-radius: 10px; 
+    margin-bottom: 20px; 
+    font-weight: bold; 
+}
+.alert-success { background: rgba(46, 204, 113, 0.2); border: 1px solid #2ecc71; color: #2ecc71; }
+.alert-danger { background: rgba(231, 76, 60, 0.2); border: 1px solid #e74c3c; color: #ff7675; }
