@@ -1,22 +1,15 @@
 <?php
 session_start();
-// אבטחה: רק משתמש מחובר יכול לגשת למחברת האישית
-if (!isset($_SESSION['user_id'])) { 
-    header("Location: login.php"); 
-    exit; 
-}
-
+if (!isset($_SESSION['user_id'])) { header("Location: login.php"); exit; }
 require_once 'db.php';
 $userId = $_SESSION['user_id'];
 
-// 1. שליפת קטגוריות שקיימים בהן מתכונים של המשתמש בלבד
-// השאילתה מבטיחה שיוצגו רק קטגוריות שבהן העלית לפחות מתכון אחד
+// שליפת קטגוריות שבהן המשתמש באמת יצר מתכונים
 $stmt_cats = $pdo->prepare("
-    SELECT DISTINCT c.* FROM categories c
-    JOIN recipes r ON c.id = r.category_id
-    WHERE r.user_id = ?
-    ORDER BY c.id ASC
-");
+    SELECT DISTINCT c.* FROM categories c 
+    JOIN recipes r ON c.id = r.category_id 
+    WHERE r.user_id = ? 
+    ORDER BY c.id ASC");
 $stmt_cats->execute([$userId]);
 $my_categories = $stmt_cats->fetchAll();
 ?>
@@ -26,171 +19,167 @@ $my_categories = $stmt_cats->fetchAll();
     <meta charset="UTF-8">
     <title>המחברת שלי | RecipeMaster</title>
     <style>
-        :root { --accent: #00f2fe; --bg: #0f172a; }
-        body { 
-            background: #0f172a; color: white; font-family: 'Segoe UI', sans-serif; 
-            margin: 0; padding: 20px; scroll-behavior: smooth; 
-        }
-        .container { max-width: 1200px; margin: 0 auto; }
+        :root { --accent: #00f2fe; --bg: #0f172a; --glass: rgba(255, 255, 255, 0.05); }
+        body { background: var(--bg); color: white; font-family: 'Segoe UI', sans-serif; margin: 0; padding-bottom: 50px; scroll-behavior: smooth; }
         
-        /* סרגל קטגוריות צף - מציג רק מה שיש בו תוכן */
-        .cat-nav { 
-            display: flex; gap: 10px; overflow-x: auto; padding: 15px 0; 
-            position: sticky; top: 0; background: #0f172a; z-index: 100; 
-            margin-bottom: 20px; border-bottom: 1px solid rgba(255,255,255,0.05);
+        /* ראש הדף */
+        .header-section { padding: 40px 30px 10px; max-width: 1200px; margin: 0 auto; }
+        
+        /* סרגל ניווט דביק */
+        .category-nav { 
+            position: sticky; top: 0; z-index: 1000; 
+            background: rgba(15, 23, 42, 0.8); backdrop-filter: blur(15px);
+            padding: 15px 0; border-bottom: 1px solid rgba(255,255,255,0.1);
+            margin-bottom: 30px;
         }
+        .nav-container { 
+            max-width: 1200px; margin: 0 auto; display: flex; 
+            gap: 10px; overflow-x: auto; padding: 0 20px; 
+            scrollbar-width: none;
+        }
+        .nav-container::-webkit-scrollbar { display: none; }
+        
         .cat-chip { 
-            padding: 8px 18px; background: rgba(255,255,255,0.05); border-radius: 50px; 
-            white-space: nowrap; color: white; text-decoration: none; 
-            border: 1px solid rgba(255,255,255,0.1); transition: 0.3s;
+            white-space: nowrap; padding: 8px 18px; border-radius: 50px; 
+            background: var(--glass); border: 1px solid rgba(255,255,255,0.1);
+            color: white; text-decoration: none; font-size: 0.9rem; transition: 0.3s;
         }
-        .cat-chip:hover { background: var(--accent); color: #0f172a; }
+        .cat-chip:hover, .cat-chip.active { border-color: var(--accent); background: rgba(0, 242, 254, 0.1); }
 
-        .search-bar { 
-            width: 100%; padding: 15px; border-radius: 15px; 
-            background: rgba(255,255,255,0.05); border: 1px solid var(--accent); 
-            color: white; margin-bottom: 30px; outline: none; 
-        }
+        /* כפתורי סינון סטטוס */
+        .filter-group { display: flex; gap: 10px; margin: 20px 0; }
+        .filter-btn { padding: 6px 15px; border-radius: 8px; border: 1px solid rgba(255,255,255,0.2); background: transparent; color: white; cursor: pointer; transition: 0.2s; font-size: 0.85rem; }
+        .filter-btn.active { border-color: var(--accent); color: var(--accent); background: rgba(0, 242, 254, 0.05); }
 
-        /* גריד ואפקט ה-Zoom שביקשת */
-        .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); gap: 20px; }
+        .container { max-width: 1200px; margin: 0 auto; padding: 0 20px; }
+        .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 25px; }
+        
+        /* כרטיס מתכון */
         .card { 
-            background: rgba(255,255,255,0.03); border-radius: 15px; overflow: hidden; 
-            border: 1px solid rgba(255,255,255,0.1); transition: 0.3s; position: relative; 
+            background: var(--glass); border-radius: 20px; overflow: hidden; 
+            border: 1px solid rgba(255,255,255,0.1); transition: 0.3s; position: relative;
         }
-        .card:hover { border-color: var(--accent); transform: translateY(-3px); }
+        .card:hover { transform: translateY(-5px); border-color: var(--accent); }
+        .img-wrapper { height: 180px; overflow: hidden; position: relative; }
+        .card-img { width: 100%; height: 100%; object-fit: cover; }
         
-        .img-wrapper { height: 160px; overflow: hidden; }
-        .card-img { width: 100%; height: 100%; object-fit: cover; transition: 0.4s; }
-        .card:hover .card-img { transform: scale(1.1); } /* הגדלת תמונה במעבר עכבר */
+        .status-tag { position: absolute; top: 10px; left: 10px; padding: 4px 8px; border-radius: 6px; font-size: 0.7rem; font-weight: bold; background: rgba(0,0,0,0.6); backdrop-filter: blur(4px); }
 
-        /* כפתור "ראה עוד/פחות" */
-        .toggle-btn { 
-            display: block; width: 100%; padding: 12px; margin-top: 20px; 
-            background: rgba(0, 242, 254, 0.05); border: 1px dashed var(--accent); 
-            color: var(--accent); cursor: pointer; border-radius: 12px; 
-            text-align: center; font-weight: bold; transition: 0.3s;
+        .card-actions { 
+            display: flex; justify-content: space-between; padding: 15px; 
+            background: rgba(0,0,0,0.2); border-top: 1px solid rgba(255,255,255,0.05);
+            align-items: center;
         }
-        .toggle-btn:hover { background: rgba(0, 242, 254, 0.1); }
-        
-        .hidden-recipe { display: none !important; }
-        .cat-section { margin-bottom: 60px; }
+        .btn-edit { color: var(--accent); text-decoration: none; font-weight: bold; font-size: 0.9rem; }
+        .btn-delete { color: #ff7675; text-decoration: none; font-size: 0.9rem; transition: 0.3s; }
+        .btn-delete:hover { color: #d63031; text-shadow: 0 0 5px rgba(255, 118, 117, 0.3); }
+
+        .section-title { margin-top: 40px; margin-bottom: 20px; display: flex; align-items: center; gap: 10px; color: var(--accent); }
+        .search-bar { width: 100%; padding: 15px; border-radius: 15px; background: var(--glass); border: 1px solid rgba(255,255,255,0.1); color: white; margin-bottom: 10px; outline: none; }
     </style>
 </head>
 <body>
 
-<div class="container">
+<div class="header-section">
     <div style="display: flex; justify-content: space-between; align-items: center;">
         <h1>המחברת שלי 📖</h1>
         <a href="index.php" style="color: #94a3b8; text-decoration: none;">🔙 חזרה לפיד</a>
     </div>
     
-    <input type="text" id="recipeSearch" class="search-bar" placeholder="🔍 חפש מתכון במחברת שלך..." onkeyup="filterRecipes()">
+    <input type="text" id="recipeSearch" class="search-bar" placeholder="🔍 חפש מתכון במחברת..." onkeyup="applyFilters()">
+    
+    <div class="filter-group">
+        <button class="filter-btn active" onclick="setStatusFilter('all', this)">הכל</button>
+        <button class="filter-btn" onclick="setStatusFilter('public', this)">🌍 פומבי</button>
+        <button class="filter-btn" onclick="setStatusFilter('private', this)">🔒 פרטי</button>
+    </div>
+</div>
 
-    <div class="cat-nav">
+<nav class="category-nav">
+    <div class="nav-container">
+        <a href="#" class="cat-chip" onclick="window.scrollTo({top: 0, behavior: 'smooth'}); return false;">הכל ✨</a>
         <?php foreach ($my_categories as $cat): ?>
-            <a href="#cat-<?php echo $cat['id']; ?>" class="cat-chip"><?php echo $cat['icon'] . " " . $cat['name']; ?></a>
+            <a href="#cat-<?php echo $cat['id']; ?>" class="cat-chip">
+                <?php echo $cat['icon'] . " " . htmlspecialchars($cat['name']); ?>
+            </a>
         <?php endforeach; ?>
     </div>
+</nav>
 
-    <?php if (empty($my_categories)): ?>
-        <div style="text-align: center; padding: 50px; opacity: 0.5;">
-            <h3>המחברת עדיין ריקה...</h3>
-            <a href="add_recipe.php" style="color: var(--accent);">הוסף את המתכון הראשון שלך!</a>
-        </div>
-    <?php endif; ?>
-
+<div class="container">
     <?php foreach ($my_categories as $cat): 
-        // שליפת המתכונים עבור כל קטגוריה
         $stmt = $pdo->prepare("SELECT * FROM recipes WHERE user_id = ? AND category_id = ? ORDER BY id DESC");
         $stmt->execute([$userId, $cat['id']]);
         $recipes = $stmt->fetchAll();
-        ?>
+    ?>
         <div class="cat-section" id="cat-<?php echo $cat['id']; ?>">
-            <h2 style="color: var(--accent); border-right: 4px solid var(--accent); padding-right: 15px;">
-                <?php echo $cat['icon'] . " " . $cat['name']; ?>
-            </h2>
-            
+            <h2 class="section-title"><?php echo $cat['icon'] . " " . $cat['name']; ?></h2>
             <div class="grid">
-                <?php foreach ($recipes as $index => $r): 
-                    // הסתרת מתכונים מהחמישי והלאה כברירת מחדל
-                    $hiddenClass = ($index >= 4) ? 'hidden-recipe' : ''; 
-                ?>
-                <div class="card <?php echo $hiddenClass; ?>" data-title="<?php echo htmlspecialchars(mb_strtolower($r['title'], 'UTF-8')); ?>">
+                <?php foreach ($recipes as $r): ?>
+                <div class="card" 
+                     data-title="<?php echo htmlspecialchars(mb_strtolower($r['title'], 'UTF-8')); ?>"
+                     data-status="<?php echo $r['is_public'] ? 'public' : 'private'; ?>">
+                    
                     <div class="img-wrapper">
+                        <div class="status-tag">
+                            <?php echo $r['is_public'] ? '🌍 פומבי' : '🔒 פרטי'; ?>
+                        </div>
                         <img src="<?php echo htmlspecialchars($r['image_url'] ?: 'default.jpg'); ?>" class="card-img">
                     </div>
+                    
                     <div style="padding: 15px;">
-                        <h4 style="margin:0; font-size: 1.1rem;"><?php echo htmlspecialchars($r['title']); ?></h4>
-                        <div style="margin-top: 10px; display: flex; justify-content: space-between; align-items: center;">
-                            <a href="view_recipe.php?id=<?php echo $r['id']; ?>" style="color: var(--accent); text-decoration: none; font-size: 0.9rem;">צפייה ←</a>
-                            <span style="font-size: 0.8rem; opacity: 0.5;"><?php echo $r['is_public'] ? '🌍' : '🔒'; ?></span>
-                        </div>
+                        <h4 style="margin:0;"><?php echo htmlspecialchars($r['title']); ?></h4>
+                    </div>
+                    
+                    <div class="card-actions">
+                        <a href="edit_recipe.php?id=<?php echo $r['id']; ?>" class="btn-edit">עריכה ✏️</a>
+                        <a href="view_recipe.php?id=<?php echo $r['id']; ?>" style="color:white; text-decoration:none; font-size:0.8rem;">צפייה</a>
+                        <a href="delete_recipe.php?id=<?php echo $r['id']; ?>" class="btn-delete" 
+                           onclick="return confirm('בטוח שרוצה למחוק?')">מחיקה 🗑️</a>
                     </div>
                 </div>
                 <?php endforeach; ?>
             </div>
-            
-            <?php if (count($recipes) > 4): ?>
-                <button class="toggle-btn" onclick="toggleSection(this)">
-                    <span class="btn-text">ראה עוד ב<?php echo $cat['name']; ?> (+<?php echo count($recipes)-4; ?>)</span>
-                </button>
-            <?php endif; ?>
         </div>
     <?php endforeach; ?>
 </div>
 
 <script>
-// פונקציית החלפה בין "ראה עוד" ל"ראה פחות"
-function toggleSection(btn) {
-    const section = btn.parentElement;
-    const cards = section.querySelectorAll('.card');
-    const btnText = btn.querySelector('.btn-text');
-    let isOpening = btnText.innerText.includes("ראה עוד");
+let currentStatus = 'all';
 
-    cards.forEach((card, index) => {
-        if (index >= 4) { // משפיע רק על המתכונים שמעבר ל-4 הראשונים
-            if (isOpening) {
-                card.classList.remove('hidden-recipe');
-                card.style.display = 'block';
-            } else {
-                card.classList.add('hidden-recipe');
-                card.style.display = 'none';
-            }
-        }
-    });
-
-    if (isOpening) {
-        btnText.innerText = "ראה פחות 🔼";
-    } else {
-        const remaining = cards.length - 4;
-        btnText.innerText = "ראה עוד ב" + section.querySelector('h2').innerText + " (+" + remaining + ")";
-        section.scrollIntoView({ behavior: 'smooth' }); // קפיצה חלקה חזרה לראש הקטגוריה
-    }
+function setStatusFilter(status, btn) {
+    document.querySelectorAll('.filter-btn').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    currentStatus = status;
+    applyFilters();
 }
 
-// פונקציית חיפוש חיה
-function filterRecipes() {
-    let input = document.getElementById('recipeSearch').value.toLowerCase();
+function applyFilters() {
+    let searchText = document.getElementById('recipeSearch').value.toLowerCase();
     let cards = document.querySelectorAll('.card');
     let sections = document.querySelectorAll('.cat-section');
-    
+
     cards.forEach(card => {
         let title = card.getAttribute('data-title');
-        if (title.includes(input)) {
+        let status = card.getAttribute('data-status');
+        
+        let matchesSearch = title.includes(searchText);
+        let matchesStatus = (currentStatus === 'all' || status === currentStatus);
+        
+        if (matchesSearch && matchesStatus) {
             card.style.display = "block";
-            card.classList.remove('hidden-recipe'); // בחיפוש מראים הכל ללא הסתרה
         } else {
             card.style.display = "none";
         }
     });
 
-    // הסתרת קטגוריה שלמה אם אין בה תוצאות בחיפוש
-    sections.forEach(sec => {
-        const visibleInSec = sec.querySelectorAll('.card[style="display: block;"]').length;
-        sec.style.display = (visibleInSec > 0 || input === "") ? "block" : "none";
+    // הסתרת קטגוריות ריקות אחרי הסינון
+    sections.forEach(section => {
+        const visibleCards = section.querySelectorAll('.card[style="display: block;"]');
+        section.style.display = (visibleCards.length > 0) ? "block" : "none";
     });
 }
 </script>
+
 </body>
 </html>
