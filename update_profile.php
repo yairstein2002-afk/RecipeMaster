@@ -10,14 +10,15 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST') {
     $new_password = $_POST['new_password'];
 
     try {
-        // 1. עדכון שם משתמש ותמונה
+        // 1. עדכון שם משתמש ותמונה במסד הנתונים
         $stmt = $pdo->prepare("UPDATE users SET username = ?, profile_img = ? WHERE id = ?");
         $stmt->execute([$username, $profile_img, $userId]);
         
-        // עדכון השם ב-Session כדי שהשינוי ייראה באתר מיד
+        // רענון הזיכרון המיידי של האתר כדי שהתמונה תשתנה מיד ב-Navbar
         $_SESSION['username'] = $username;
+        $_SESSION['profile_img'] = $profile_img;
 
-        // 2. עדכון סיסמה - רק אם השדה לא ריק
+        // 2. עדכון סיסמה חזקה (רק אם הוקלדה סיסמה חדשה)
         if (!empty($new_password)) {
             $strongRegex = '/^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[@$!%*?&])[A-Za-z\d@$!%*?&]{8,}$/';
             if (preg_match($strongRegex, $new_password)) {
@@ -37,3 +38,4 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST') {
         die("שגיאה במסד הנתונים: " . $e->getMessage());
     }
 }
+?>
