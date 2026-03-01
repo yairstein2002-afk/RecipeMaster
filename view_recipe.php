@@ -8,20 +8,27 @@ $userRole = $_SESSION['role'] ?? 'guest';
 
 if (!$recipeId) { header("Location: index.php"); exit; }
 
-// --- 1. מונה צפיות חכם (רק למחוברים ורק פעם אחת) ---
+// --- תיקון קריטי: סנכרון סטטוס מול ה-DB בזמן אמת ---
+if ($userId) {
+    $stmt_check = $pdo->prepare("SELECT status, role FROM users WHERE id = ?");
+    $stmt_check->execute([$userId]);
+    $dbUser = $stmt_check->fetch();
+    if ($dbUser) {
+        $_SESSION['status'] = $dbUser['status'];
+        $_SESSION['role'] = $dbUser['role'];
+    }
+}
+$userStatus = ($userRole === 'admin') ? 'approved' : ($_SESSION['status'] ?? 'pending');
+
+// --- 1. מונה צפיות חכם ---
 if ($userId) {
     try {
-        // מנסים להכניס רישום לטבלת הצפיות
         $stmt_view_log = $pdo->prepare("INSERT IGNORE INTO recipe_views (recipe_id, user_id) VALUES (?, ?)");
         $stmt_view_log->execute([$recipeId, $userId]);
-
-        // אם השאילתה הצליחה להכניס שורה (כלומר המשתמש מעולם לא צפה במתכון הזה)
         if ($stmt_view_log->rowCount() > 0) {
             $pdo->prepare("UPDATE recipes SET views = views + 1 WHERE id = ?")->execute([$recipeId]);
         }
-    } catch (PDOException $e) {
-        // שגיאה שקטה במקרה של תקלה בטבלת הצפיות
-    }
+    } catch (PDOException $e) { }
 }
 
 // --- 2. לוגיקת אדמין (פרטי/ציבורי) ---
@@ -34,7 +41,7 @@ if (isset($_POST['toggle_privacy']) && $userRole === 'admin') {
 }
 
 // --- 3. לייקים ---
-if (isset($_POST['toggle_like']) && $userId) {
+if (isset($_POST['toggle_like']) && $userId && $userStatus === 'approved') {
     $check = $pdo->prepare("SELECT id FROM likes WHERE user_id = ? AND recipe_id = ?");
     $check->execute([$userId, $recipeId]);
     if ($check->fetch()) {
@@ -47,16 +54,32 @@ if (isset($_POST['toggle_like']) && $userId) {
 
 // --- 4. תגובות ---
 if (isset($_POST['submit_comment']) && $userId && !empty(trim($_POST['comment_text']))) {
-    $parentId = !empty($_POST['parent_id']) ? $_POST['parent_id'] : null;
+    if ($userStatus !== 'approved') die("גישה חסומה.");
+    $parentId = !empty($_POST['parent_id']) ? (int)$_POST['parent_id'] : null;
+    
+    if ($parentId) {
+        $checkParent = $pdo->prepare("SELECT parent_id FROM comments WHERE id = ?");
+        $checkParent->execute([$parentId]);
+        if ($checkParent->fetchColumn() !== null) { die("לא ניתן להגיב על תגובה ברמה זו."); }
+    }
+
     $pdo->prepare("INSERT INTO comments (recipe_id, user_id, comment_text, parent_id) VALUES (?, ?, ?, ?)")
         ->execute([$recipeId, $userId, $_POST['comment_text'], $parentId]);
     header("Location: view_recipe.php?id=$recipeId#comments"); exit;
 }
 
-// שליפת נתונים (אותה לוגיקה שהייתה לך)
-$recipe = $pdo->prepare("SELECT r.*, u.username, u.profile_img, (SELECT COUNT(*) FROM likes WHERE recipe_id = r.id) as likes_count, (SELECT COUNT(*) FROM likes WHERE recipe_id = r.id AND user_id = ?) as user_liked FROM recipes r JOIN users u ON r.user_id = u.id WHERE r.id = ?");
-$recipe->execute([$userId, $recipeId]);
-$recipe = $recipe->fetch();
+// --- שליפת נתונים מתוקנת (צפיות ולייקים) ---
+$recipe_sql = "SELECT r.*, u.username, u.profile_img, 
+               (SELECT COUNT(*) FROM likes WHERE recipe_id = r.id) as likes_count, 
+               (SELECT COUNT(*) FROM likes WHERE recipe_id = r.id AND user_id = ?) as user_liked,
+               (SELECT COUNT(*) FROM recipe_views WHERE recipe_id = r.id) as real_views
+               FROM recipes r 
+               JOIN users u ON r.user_id = u.id 
+               WHERE r.id = ?";
+
+$recipe_stmt = $pdo->prepare($recipe_sql);
+$recipe_stmt->execute([$userId, $recipeId]);
+$recipe = $recipe_stmt->fetch();
 
 if (!$recipe) die("המתכון לא נמצא.");
 
@@ -66,7 +89,7 @@ $ingredients->execute([$recipeId]); $ingredients = $ingredients->fetchAll();
 $instructions = $pdo->prepare("SELECT * FROM instructions WHERE recipe_id = ? ORDER BY id ASC");
 $instructions->execute([$recipeId]); $instructions = $instructions->fetchAll();
 
-$allComments = $pdo->prepare("SELECT c.*, u.username, u.profile_img FROM comments c JOIN users u ON c.user_id = u.id WHERE c.recipe_id = ? ORDER BY c.created_at ASC");
+$allComments = $pdo->prepare("SELECT c.*, u.username, u.profile_img, u.role FROM comments c JOIN users u ON c.user_id = u.id WHERE c.recipe_id = ? ORDER BY c.created_at ASC");
 $allComments->execute([$recipeId]);
 $commentsByParent = [];
 foreach ($allComments->fetchAll() as $c) { $commentsByParent[$c['parent_id'] ?? 0][] = $c; }
@@ -74,6 +97,50 @@ foreach ($allComments->fetchAll() as $c) { $commentsByParent[$c['parent_id'] ?? 
 function getYouTubeEmbed($url) {
     if (preg_match('/(?:v=|shorts\/|be\/)([^&?\/]+)/', $url, $match)) return "https://www.youtube.com/embed/" . $match[1];
     return null;
+}
+
+function renderComments($parentId, $commentsByParent, $userId, $userStatus, $isReply = false) {
+    if (!isset($commentsByParent[$parentId])) return;
+    foreach ($commentsByParent[$parentId] as $c) { 
+        $isAdmin = ($c['role'] === 'admin');
+        $childCount = isset($commentsByParent[$c['id']]) ? count($commentsByParent[$c['id']]) : 0;
+        ?>
+        <div class="comment-node" style="margin-bottom: 15px;">
+            <div class="comment-main" style="background: rgba(255,255,255,0.03); padding: 15px; border-radius: 15px; border: 1px solid rgba(255,255,255,0.05);">
+                <div style="display:flex; align-items:center; gap:8px;">
+                    <img src="<?php echo $c['profile_img'] ?: 'user-default.png'; ?>" style="width:30px; height:30px; border-radius:50%;">
+                    <b><?php echo htmlspecialchars($c['username']); ?> <?php echo $isAdmin ? '👑' : ''; ?></b>
+                </div>
+                <p style="margin: 10px 0;"><?php echo nl2br(htmlspecialchars($c['comment_text'])); ?></p>
+                
+                <div style="display:flex; gap:15px; align-items: center;">
+                    <?php if($userId && $userStatus === 'approved' && !$isReply): ?>
+                        <button onclick="toggleDiv('reply-f-<?php echo $c['id']; ?>')" class="comment-action-btn">השב ↩️</button>
+                    <?php endif; ?>
+
+                    <?php if($childCount > 0): ?>
+                        <button onclick="toggleComments(<?php echo $c['id']; ?>, this)" class="comment-action-btn" data-count="<?php echo $childCount; ?>">
+                            הצג <?php echo $childCount; ?> תגובות ▼
+                        </button>
+                    <?php endif; ?>
+                </div>
+
+                <div id="reply-f-<?php echo $c['id']; ?>" style="display:none; margin-top:10px;">
+                    <form method="POST">
+                        <input type="hidden" name="parent_id" value="<?php echo $c['id']; ?>">
+                        <textarea name="comment_text" rows="1" placeholder="תגובה..."></textarea>
+                        <button type="submit" name="submit_comment" class="btn-submit" style="padding:4px 10px; font-size:0.8rem; margin-top:5px;">שלח</button>
+                    </form>
+                </div>
+            </div>
+            
+            <?php if (!$isReply && $childCount > 0): ?>
+            <div id="replies-<?php echo $c['id']; ?>" class="replies-container" style="display:none; margin-right: 30px; border-right: 2px solid var(--accent); padding-right: 15px; margin-top:10px;">
+                <?php renderComments($c['id'], $commentsByParent, $userId, $userStatus, true); ?>
+            </div>
+            <?php endif; ?>
+        </div>
+    <?php }
 }
 ?>
 <!DOCTYPE html>
@@ -86,14 +153,15 @@ function getYouTubeEmbed($url) {
         :root { --accent: #00f2fe; --bg: #0f172a; --glass: rgba(255, 255, 255, 0.05); --danger: #ff4757; --wa: #25D366; }
         body { background: var(--bg); color: white; font-family: 'Segoe UI', sans-serif; margin: 0; padding-bottom: 50px; }
         .hero { width: 100%; height: 350px; background: url('<?php echo htmlspecialchars($recipe['image_url']); ?>') center/cover; position: relative; }
-        .hero-overlay { position: absolute; bottom: 0; left: 0; right: 0; background: linear-gradient(transparent, var(--bg)); padding: 30px; text-align: center; }
+        .hero-overlay { position: absolute; inset: 0; background: linear-gradient(transparent, var(--bg)); display: flex; align-items: flex-end; justify-content: center; padding-bottom: 30px; }
         .container { max-width: 900px; margin: -30px auto 0; padding: 0 20px; }
-        .meta-bar { display: flex; justify-content: space-between; align-items: center; background: var(--glass); backdrop-filter: blur(15px); padding: 15px 25px; border-radius: 50px; border: 1px solid rgba(255,255,255,0.1); margin-bottom: 30px; gap: 10px; }
-        .btn-action { background: none; border: 1px solid rgba(255,255,255,0.2); color: white; padding: 8px 15px; border-radius: 50px; cursor: pointer; text-decoration: none; font-size: 0.85rem; display: flex; align-items: center; gap: 5px; }
+        .meta-bar { display: flex; justify-content: space-between; align-items: center; background: var(--glass); backdrop-filter: blur(15px); padding: 15px 25px; border-radius: 50px; border: 1px solid rgba(255,255,255,0.1); margin-bottom: 30px; gap: 10px; flex-wrap: wrap; }
+        .btn-action { background: none; border: 1px solid rgba(255,255,255,0.2); color: white; padding: 8px 15px; border-radius: 50px; cursor: pointer; text-decoration: none; font-size: 0.85rem; display: flex; align-items: center; gap: 5px; transition: 0.3s; }
         .btn-action.active { border-color: var(--danger); color: var(--danger); }
+        .comment-action-btn { background:none; border:none; color:var(--accent); cursor:pointer; font-size:0.85rem; padding: 5px 0; font-weight: bold; }
         .grid { display: grid; grid-template-columns: 1fr 1.5fr; gap: 20px; }
+        @media (max-width: 768px) { .grid { grid-template-columns: 1fr; } }
         .card { background: var(--glass); padding: 25px; border-radius: 20px; border: 1px solid rgba(255,255,255,0.1); }
-        .replies-container { display: none; margin-right: 40px; margin-top: 10px; border-right: 2px solid var(--accent); padding-right: 15px; }
         textarea { width: 100%; background: rgba(0,0,0,0.3); border: 1px solid rgba(255,255,255,0.1); color: white; border-radius: 15px; padding: 12px; resize: none; box-sizing: border-box; }
         .btn-submit { background: var(--accent); color: var(--bg); border: none; padding: 8px 20px; border-radius: 50px; font-weight: bold; cursor: pointer; }
     </style>
@@ -106,15 +174,19 @@ function getYouTubeEmbed($url) {
     <div class="meta-bar">
         <div style="display: flex; align-items: center; gap: 12px;">
             <img src="<?php echo $recipe['profile_img'] ?: 'user-default.png'; ?>" style="width:45px; height:45px; border-radius:50%; border: 2px solid var(--accent);">
-            <div><b><?php echo htmlspecialchars($recipe['username']); ?></b><br><small>👁️ <?php echo $recipe['views']; ?> צפיות (מחוברים)</small></div>
+            <div><b><?php echo htmlspecialchars($recipe['username']); ?></b><br><small>👁️ <?php echo number_format($recipe['real_views']); ?> צפיות</small></div>
         </div>
         <div style="display: flex; gap: 8px; flex-wrap: wrap; justify-content: center;">
+            <a href="index.php" class="btn-action">🏠 הביתה</a>
             <?php if($userId): ?>
                 <a href="my_recipes.php" class="btn-action" style="background: rgba(0, 242, 254, 0.1); border-color: var(--accent); color: var(--accent);">📖 המחברת שלי</a>
+                <form method="POST" style="margin:0;"><button type="submit" name="toggle_like" class="btn-action <?php echo $recipe['user_liked'] ? 'active' : ''; ?>">❤️ <?php echo $recipe['likes_count']; ?></button></form>
             <?php endif; ?>
             <a href="shopping_list.php" class="btn-action">🛒 הסל שלי</a>
             <a href="#" class="btn-action" style="color: var(--wa); border-color: var(--wa);" onclick="shareWA(event)">שיתוף 📱</a>
-            <a href="index.php" class="btn-action">🏠 הביתה</a>
+            <?php if($userRole === 'admin'): ?>
+                <form method="POST" style="margin:0;"><button type="submit" name="toggle_privacy" class="btn-action" style="color: #f1c40f; border-color: #f1c40f;"><?php echo ($recipe['is_public'] == 1) ? '🔒 לפרטי' : '🌍 לציבורי'; ?></button></form>
+            <?php endif; ?>
         </div>
     </div>
 
@@ -124,9 +196,15 @@ function getYouTubeEmbed($url) {
             <?php foreach ($ingredients as $ing): 
                 $line = trim($ing['amount'] . " " . $ing['ingredient_name'] . " " . ($ing['ingredient_description'] ? "({$ing['ingredient_description']})" : ""));
             ?>
-                <label style="display:flex; gap:10px; margin-bottom:8px; cursor: pointer;">
-                    <input type="checkbox" class="ing-checkbox" data-name="<?php echo htmlspecialchars($ing['ingredient_name']); ?>" onchange="updateList(this, '<?php echo $ing['amount']; ?>', '<?php echo addslashes($ing['ingredient_name']); ?>', '<?php echo addslashes($line); ?>')">
-                    <?php echo htmlspecialchars($line); ?>
+                <label style="display:flex; gap:10px; margin-bottom:12px; cursor: pointer; align-items: center;">
+                    <input type="checkbox" class="ing-checkbox" 
+                           data-name="<?php echo htmlspecialchars($ing['ingredient_name']); ?>" 
+                           data-line="<?php echo htmlspecialchars($line); ?>"
+                           /* שינוי: מאפשר הוספה לסל לכל מחובר, גם אם הוא pending */
+                           <?php echo (!$userId) ? 'disabled' : ''; ?>
+                           onchange="updateList(this)"
+                           style="width:18px; height:18px; accent-color: var(--accent);">
+                    <span><?php echo htmlspecialchars($line); ?></span>
                 </label>
             <?php endforeach; ?>
         </div>
@@ -141,77 +219,46 @@ function getYouTubeEmbed($url) {
         </div>
     </div>
 
-    <div class="comments-area" id="comments">
+    <div class="comments-area" id="comments" style="margin-top: 40px;">
         <h3>💬 תגובות</h3>
-        <?php if($userId): ?>
+        <?php if($userId && $userStatus === 'approved'): ?>
             <form method="POST" style="margin-bottom: 25px;">
                 <textarea name="comment_text" rows="2" placeholder="כתבו תגובה..." required></textarea>
-                <button type="submit" name="submit_comment" class="btn-submit">פרסם</button>
+                <button type="submit" name="submit_comment" class="btn-submit" style="margin-top: 10px;">פרסם ✨</button>
             </form>
         <?php endif; ?>
-
-        <?php 
-        renderComments(0, $commentsByParent, $userId); 
-        
-        function renderComments($parentId, $commentsByParent, $userId) {
-            if (!isset($commentsByParent[$parentId])) return;
-            foreach ($commentsByParent[$parentId] as $c) { ?>
-                <div class="comment-node">
-                    <div class="comment-main" style="background: rgba(255,255,255,0.03); padding: 15px; border-radius: 15px; margin-bottom: 10px; border: 1px solid rgba(255,255,255,0.05);">
-                        <div style="display:flex; align-items:center; gap:8px; margin-bottom:5px;">
-                            <img src="<?php echo $c['profile_img'] ?: 'user-default.png'; ?>" style="width:30px; height:30px; border-radius:50%;">
-                            <b style="font-size:0.9rem;"><?php echo htmlspecialchars($c['username']); ?></b>
-                        </div>
-                        <div style="font-size:0.95rem; margin: 10px 0;"><?php echo nl2br(htmlspecialchars($c['comment_text'])); ?></div>
-                        <div style="display:flex; gap:15px;">
-                            <?php if($userId): ?>
-                                <button class="btn-submit" style="background:none; color:var(--accent); font-size:0.8rem; padding:0;" onclick="toggleDiv('reply-f-<?php echo $c['id']; ?>')">השב ↩️</button>
-                            <?php endif; ?>
-                            <?php if(isset($commentsByParent[$c['id']])): ?>
-                                <button class="btn-submit" style="background:none; color:var(--accent); font-size:0.8rem; padding:0;" onclick="toggleReplies(<?php echo $c['id']; ?>)">ראה תגובות ▼</button>
-                            <?php endif; ?>
-                        </div>
-                        <div id="reply-f-<?php echo $c['id']; ?>" style="display:none; margin-top:10px;">
-                            <form method="POST">
-                                <input type="hidden" name="parent_id" value="<?php echo $c['id']; ?>">
-                                <textarea name="comment_text" rows="1" placeholder="תשובה..."></textarea>
-                                <button type="submit" name="submit_comment" class="btn-submit" style="margin-top:5px; padding:4px 10px;">שלח</button>
-                            </form>
-                        </div>
-                    </div>
-                    <div id="replies-<?php echo $c['id']; ?>" class="replies-container">
-                        <?php renderComments($c['id'], $commentsByParent, $userId); ?>
-                    </div>
-                </div>
-            <?php }
-        }
-        ?>
+        <?php renderComments(0, $commentsByParent, $userId, $userStatus); ?>
     </div>
 </div>
 
 <script>
-function shareWA(e) { e.preventDefault(); window.open("https://api.whatsapp.com/send?text=" + encodeURIComponent("תראו איזה מתכון מעולה: " + window.location.href), "_blank"); }
+function shareWA(e) { e.preventDefault(); window.open("https://api.whatsapp.com/send?text=" + encodeURIComponent("תראו את המתכון הזה: " + window.location.href), "_blank"); }
 function toggleDiv(id) { const el = document.getElementById(id); el.style.display = (el.style.display === 'block') ? 'none' : 'block'; }
-function toggleReplies(id) { const el = document.getElementById('replies-' + id); el.style.display = (el.style.display === 'block') ? 'none' : 'block'; }
 
-// רשימת קניות
-const currentUser = "<?php echo $_SESSION['username'] ?? 'guest'; ?>";
-const cartKey = 'shopping_list_' + currentUser;
+function toggleComments(id, btn) {
+    const container = document.getElementById('replies-' + id);
+    const count = btn.getAttribute('data-count');
+    if (container.style.display === 'none' || container.style.display === '') {
+        container.style.display = 'block';
+        btn.innerHTML = 'הצג פחות ▲';
+    } else {
+        container.style.display = 'none';
+        btn.innerHTML = 'הצג ' + count + ' תגובות ▼';
+    }
+}
 
-function updateList(cb, amount, name, fullDescription) {
+const cartKey = 'shopping_list_<?php echo $_SESSION['username'] ?? 'guest'; ?>';
+function updateList(cb) {
     let list = JSON.parse(localStorage.getItem(cartKey)) || [];
+    const name = cb.dataset.name;
+    const line = cb.dataset.line;
     const recipeId = "<?php echo $recipeId; ?>";
-    const itemIdentifier = recipeId + "_" + name; 
+    const id = recipeId + "_" + name;
 
     if (cb.checked) {
-        list.push({ 
-            id: itemIdentifier, 
-            amount: parseFloat(amount) || 0, 
-            name: name, 
-            unit: fullDescription.replace(/[0-9.]/g, '').trim() 
-        });
+        list.push({ id: id, fullText: line });
     } else {
-        list = list.filter(i => i.id !== itemIdentifier);
+        list = list.filter(i => i.id !== id);
     }
     localStorage.setItem(cartKey, JSON.stringify(list));
 }
@@ -219,8 +266,8 @@ function updateList(cb, amount, name, fullDescription) {
 document.addEventListener('DOMContentLoaded', () => {
     const list = JSON.parse(localStorage.getItem(cartKey)) || [];
     document.querySelectorAll('.ing-checkbox').forEach(cb => {
-        const name = cb.getAttribute('data-name');
-        if (list.some(i => i.id === "<?php echo $recipeId; ?>_" + name)) cb.checked = true;
+        const id = "<?php echo $recipeId; ?>_" + cb.dataset.name;
+        if (list.some(i => i.id === id)) cb.checked = true;
     });
 });
 </script>
