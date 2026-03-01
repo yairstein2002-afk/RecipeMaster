@@ -17,7 +17,6 @@ $categories = $pdo->query("SELECT * FROM categories ORDER BY id ASC")->fetchAll(
 
 // פונקציית עזר לשליפת מתכונים לפי קריטריון
 function getRecipesByOrder($pdo, $orderBy) {
-    // השאילתה המעודכנת כוללת סדר עדיפויות משני למקרה של תיקו
     $sql = "SELECT r.*, u.username, u.profile_img, c.icon,
             (SELECT COUNT(*) FROM likes WHERE recipe_id = r.id) as likes_count,
             (SELECT COUNT(*) FROM comments WHERE recipe_id = r.id) as comments_count
@@ -25,7 +24,6 @@ function getRecipesByOrder($pdo, $orderBy) {
             JOIN users u ON r.user_id = u.id 
             JOIN categories c ON r.category_id = c.id
             WHERE r.is_public = 1 AND r.is_approved = 1 
-            /* הסדר: הקריטריון הראשי -> צפיות -> לייקים -> תגובות -> הכי חדש */
             ORDER BY $orderBy DESC, views DESC, likes_count DESC, comments_count DESC, r.id DESC 
             LIMIT 12"; 
     return $pdo->query($sql)->fetchAll();
@@ -37,9 +35,9 @@ $topViews = getRecipesByOrder($pdo, 'views');
 $topComments = getRecipesByOrder($pdo, 'comments_count');
 
 $sections = [
-    ['id' => 'liked', 'title' => '🔥 הכי אהובים (לייקים)', 'data' => $topLiked, 'badge' => '❤️'],
-    ['id' => 'views', 'title' => '📈 הכי נצפים', 'data' => $topViews, 'badge' => '👁️'],
-    ['id' => 'comments', 'title' => '💬 הכי מדוברים', 'data' => $topComments, 'badge' => '💬']
+    ['id' => 'liked', 'title' => '🔥 הכי אהובים (לייקים)', 'data' => $topLiked],
+    ['id' => 'views', 'title' => '📈 הכי נצפים', 'data' => $topViews],
+    ['id' => 'comments', 'title' => '💬 הכי מדוברים', 'data' => $topComments]
 ];
 ?>
 <!DOCTYPE html>
@@ -72,7 +70,13 @@ $sections = [
         .recipe-img { width: 100%; height: 100%; object-fit: cover; transition: 0.4s; }
         .recipe-card:hover .recipe-img { transform: scale(1.1); }
         
-        .stat-badge { position: absolute; top: 10px; right: 10px; background: rgba(0,0,0,0.6); color: white; padding: 5px 10px; border-radius: 10px; font-size: 0.8rem; backdrop-filter: blur(5px); border: 1px solid rgba(255,255,255,0.1); }
+        /* עיצוב משופר לבאדג' עם לייקים וצפיות יחד */
+        .stat-badge { 
+            position: absolute; top: 10px; right: 10px; 
+            background: rgba(0,0,0,0.7); color: white; padding: 6px 12px; 
+            border-radius: 12px; font-size: 0.75rem; backdrop-filter: blur(5px); 
+            border: 1px solid rgba(255,255,255,0.1); display: flex; gap: 10px; align-items: center;
+        }
 
         .shopping-cart-float { position: fixed; bottom: 30px; left: 30px; background: linear-gradient(45deg, #ff4757, #ff6b81); color: white; padding: 15px 25px; border-radius: 50px; text-decoration: none; font-weight: bold; display: none; box-shadow: 0 10px 25px rgba(255, 71, 87, 0.4); z-index: 1000; transition: 0.3s; align-items: center; }
         .notebook-btn { position: fixed; bottom: 30px; right: 30px; background: linear-gradient(45deg, #4facfe, #00f2fe); color: #0f172a; padding: 15px 30px; border-radius: 50px; text-decoration: none; font-weight: bold; z-index: 999; box-shadow: 0 10px 20px rgba(0,0,0,0.3); }
@@ -142,11 +146,9 @@ $sections = [
                 <div class="img-wrapper">
                     <img src="<?php echo htmlspecialchars($r['image_url'] ?: 'default.jpg'); ?>" class="recipe-img">
                     <div class="stat-badge">
-                        <?php 
-                            if($sec['id'] == 'liked') echo "❤️ " . $r['likes_count'];
-                            elseif($sec['id'] == 'views') echo "👁️ " . $r['views'];
-                            else echo "💬 " . $r['comments_count'];
-                        ?>
+                        <span>👁️ <?php echo number_format($r['views']); ?></span>
+                        <span style="opacity: 0.5;">|</span>
+                        <span>❤️ <?php echo $r['likes_count']; ?></span>
                     </div>
                 </div>
                 <div style="padding: 15px;">
@@ -176,7 +178,6 @@ $sections = [
 </a>
 
 <script>
-// פונקציית הרחבה/צמצום לכל אזור בנפרד
 function toggleSection(secId, btn) {
     const grid = document.getElementById('grid-' + secId);
     const items = grid.querySelectorAll('.recipe-card');
@@ -191,7 +192,6 @@ function toggleSection(secId, btn) {
     btn.innerText = isOpening ? "הצג פחות 🔼" : "ראה עוד (+" + (items.length - 4) + ")";
 }
 
-// חיפוש חכם שסורק את כל האזורים
 function filterAllSections() {
     let input = document.getElementById('mainSearch').value.toLowerCase();
     let cards = document.querySelectorAll('.recipe-card');
@@ -207,13 +207,11 @@ function filterAllSections() {
         }
     });
 
-    // מחביא כפתורי "ראה עוד" בזמן חיפוש כדי שלא יפריעו לתוצאות
     buttons.forEach(btn => {
         btn.style.display = (input === "") ? "block" : "none";
     });
 }
 
-// ניהול סל קניות צף
 function checkShoppingList() {
     const currentUser = "<?php echo $_SESSION['username'] ?? 'guest'; ?>";
     const cartKey = 'shopping_list_' + currentUser;
