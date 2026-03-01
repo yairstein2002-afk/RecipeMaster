@@ -2,14 +2,26 @@
 session_start();
 require_once 'db.php';
 
-$recipeId = $_GET['id'] ?? null;
+$recipeId = isset($_GET['id']) ? (int)$_GET['id'] : null;
 $userId = $_SESSION['user_id'] ?? null; 
 $userRole = $_SESSION['role'] ?? 'guest'; 
 
-// --- 1. מונה צפיות חכם ---
-if ($recipeId && !isset($_SESSION['viewed_recipes'][$recipeId])) {
-    $pdo->prepare("UPDATE recipes SET views = views + 1 WHERE id = ?")->execute([$recipeId]);
-    $_SESSION['viewed_recipes'][$recipeId] = true;
+if (!$recipeId) { header("Location: index.php"); exit; }
+
+// --- 1. מונה צפיות חכם (רק למחוברים ורק פעם אחת) ---
+if ($userId) {
+    try {
+        // מנסים להכניס רישום לטבלת הצפיות
+        $stmt_view_log = $pdo->prepare("INSERT IGNORE INTO recipe_views (recipe_id, user_id) VALUES (?, ?)");
+        $stmt_view_log->execute([$recipeId, $userId]);
+
+        // אם השאילתה הצליחה להכניס שורה (כלומר המשתמש מעולם לא צפה במתכון הזה)
+        if ($stmt_view_log->rowCount() > 0) {
+            $pdo->prepare("UPDATE recipes SET views = views + 1 WHERE id = ?")->execute([$recipeId]);
+        }
+    } catch (PDOException $e) {
+        // שגיאה שקטה במקרה של תקלה בטבלת הצפיות
+    }
 }
 
 // --- 2. לוגיקת אדמין (פרטי/ציבורי) ---
@@ -41,7 +53,7 @@ if (isset($_POST['submit_comment']) && $userId && !empty(trim($_POST['comment_te
     header("Location: view_recipe.php?id=$recipeId#comments"); exit;
 }
 
-// שליפת נתונים
+// שליפת נתונים (אותה לוגיקה שהייתה לך)
 $recipe = $pdo->prepare("SELECT r.*, u.username, u.profile_img, (SELECT COUNT(*) FROM likes WHERE recipe_id = r.id) as likes_count, (SELECT COUNT(*) FROM likes WHERE recipe_id = r.id AND user_id = ?) as user_liked FROM recipes r JOIN users u ON r.user_id = u.id WHERE r.id = ?");
 $recipe->execute([$userId, $recipeId]);
 $recipe = $recipe->fetch();
@@ -84,7 +96,6 @@ function getYouTubeEmbed($url) {
         .replies-container { display: none; margin-right: 40px; margin-top: 10px; border-right: 2px solid var(--accent); padding-right: 15px; }
         textarea { width: 100%; background: rgba(0,0,0,0.3); border: 1px solid rgba(255,255,255,0.1); color: white; border-radius: 15px; padding: 12px; resize: none; box-sizing: border-box; }
         .btn-submit { background: var(--accent); color: var(--bg); border: none; padding: 8px 20px; border-radius: 50px; font-weight: bold; cursor: pointer; }
-        @media (max-width: 800px) { .grid { grid-template-columns: 1fr; } .meta-bar { flex-direction: column; border-radius: 20px; padding: 20px; } }
     </style>
 </head>
 <body>
@@ -95,27 +106,14 @@ function getYouTubeEmbed($url) {
     <div class="meta-bar">
         <div style="display: flex; align-items: center; gap: 12px;">
             <img src="<?php echo $recipe['profile_img'] ?: 'user-default.png'; ?>" style="width:45px; height:45px; border-radius:50%; border: 2px solid var(--accent);">
-            <div><b><?php echo htmlspecialchars($recipe['username']); ?></b><br><small>👁️ <?php echo $recipe['views']; ?> צפיות</small></div>
+            <div><b><?php echo htmlspecialchars($recipe['username']); ?></b><br><small>👁️ <?php echo $recipe['views']; ?> צפיות (מחוברים)</small></div>
         </div>
         <div style="display: flex; gap: 8px; flex-wrap: wrap; justify-content: center;">
             <?php if($userId): ?>
                 <a href="my_recipes.php" class="btn-action" style="background: rgba(0, 242, 254, 0.1); border-color: var(--accent); color: var(--accent);">📖 המחברת שלי</a>
             <?php endif; ?>
-
             <a href="shopping_list.php" class="btn-action">🛒 הסל שלי</a>
             <a href="#" class="btn-action" style="color: var(--wa); border-color: var(--wa);" onclick="shareWA(event)">שיתוף 📱</a>
-            
-            <?php if($userRole === 'admin'): ?>
-                <form method="POST" style="margin:0;"><button type="submit" name="toggle_privacy" class="btn-action" style="color: var(--danger); border-color: var(--danger);">
-                    <?php echo ($recipe['is_public'] == 1) ? '🔒 לפרטי' : '🌍 לציבורי'; ?>
-                </button></form>
-            <?php endif; ?>
-
-            <?php if($userId): ?>
-                <form method="POST" style="margin:0;"><button type="submit" name="toggle_like" class="btn-action <?php echo $recipe['user_liked'] ? 'active' : ''; ?>">
-                    <?php echo $recipe['user_liked'] ? '❤️' : '🤍'; ?> <?php echo $recipe['likes_count']; ?>
-                </button></form>
-            <?php endif; ?>
             <a href="index.php" class="btn-action">🏠 הביתה</a>
         </div>
     </div>
@@ -153,17 +151,19 @@ function getYouTubeEmbed($url) {
         <?php endif; ?>
 
         <?php 
+        renderComments(0, $commentsByParent, $userId); 
+        
         function renderComments($parentId, $commentsByParent, $userId) {
             if (!isset($commentsByParent[$parentId])) return;
             foreach ($commentsByParent[$parentId] as $c) { ?>
                 <div class="comment-node">
-                    <div class="comment-main">
+                    <div class="comment-main" style="background: rgba(255,255,255,0.03); padding: 15px; border-radius: 15px; margin-bottom: 10px; border: 1px solid rgba(255,255,255,0.05);">
                         <div style="display:flex; align-items:center; gap:8px; margin-bottom:5px;">
-                            <img src="<?php echo $c['profile_img']; ?>" style="width:30px; height:30px; border-radius:50%;">
+                            <img src="<?php echo $c['profile_img'] ?: 'user-default.png'; ?>" style="width:30px; height:30px; border-radius:50%;">
                             <b style="font-size:0.9rem;"><?php echo htmlspecialchars($c['username']); ?></b>
                         </div>
-                        <div style="font-size:0.95rem;"><?php echo nl2br(htmlspecialchars($c['comment_text'])); ?></div>
-                        <div style="display:flex; gap:15px; align-items:center;">
+                        <div style="font-size:0.95rem; margin: 10px 0;"><?php echo nl2br(htmlspecialchars($c['comment_text'])); ?></div>
+                        <div style="display:flex; gap:15px;">
                             <?php if($userId): ?>
                                 <button class="btn-submit" style="background:none; color:var(--accent); font-size:0.8rem; padding:0;" onclick="toggleDiv('reply-f-<?php echo $c['id']; ?>')">השב ↩️</button>
                             <?php endif; ?>
@@ -172,7 +172,11 @@ function getYouTubeEmbed($url) {
                             <?php endif; ?>
                         </div>
                         <div id="reply-f-<?php echo $c['id']; ?>" style="display:none; margin-top:10px;">
-                            <form method="POST"><input type="hidden" name="parent_id" value="<?php echo $c['id']; ?>"><textarea name="comment_text" rows="1" placeholder="תשובה..."></textarea><button type="submit" name="submit_comment" class="btn-submit" style="margin-top:5px; padding:4px 10px;">שלח</button></form>
+                            <form method="POST">
+                                <input type="hidden" name="parent_id" value="<?php echo $c['id']; ?>">
+                                <textarea name="comment_text" rows="1" placeholder="תשובה..."></textarea>
+                                <button type="submit" name="submit_comment" class="btn-submit" style="margin-top:5px; padding:4px 10px;">שלח</button>
+                            </form>
                         </div>
                     </div>
                     <div id="replies-<?php echo $c['id']; ?>" class="replies-container">
@@ -181,7 +185,6 @@ function getYouTubeEmbed($url) {
                 </div>
             <?php }
         }
-        renderComments(0, $commentsByParent, $userId);
         ?>
     </div>
 </div>
@@ -191,22 +194,21 @@ function shareWA(e) { e.preventDefault(); window.open("https://api.whatsapp.com/
 function toggleDiv(id) { const el = document.getElementById(id); el.style.display = (el.style.display === 'block') ? 'none' : 'block'; }
 function toggleReplies(id) { const el = document.getElementById('replies-' + id); el.style.display = (el.style.display === 'block') ? 'none' : 'block'; }
 
+// רשימת קניות
 const currentUser = "<?php echo $_SESSION['username'] ?? 'guest'; ?>";
 const cartKey = 'shopping_list_' + currentUser;
 
 function updateList(cb, amount, name, fullDescription) {
     let list = JSON.parse(localStorage.getItem(cartKey)) || [];
     const recipeId = "<?php echo $recipeId; ?>";
-    // מזהה ייחודי שכולל את המתכון והשם כדי למנוע כפילויות מאותו מתכון
     const itemIdentifier = recipeId + "_" + name; 
 
     if (cb.checked) {
-        // מוסיפים אובייקט עם כמות מספרית
         list.push({ 
             id: itemIdentifier, 
             amount: parseFloat(amount) || 0, 
             name: name, 
-            unit: fullDescription.replace(/[0-9.]/g, '').trim() // מנקה מספרים מהתיאור כדי להישאר עם היחידה (למשל "כוס חלב")
+            unit: fullDescription.replace(/[0-9.]/g, '').trim() 
         });
     } else {
         list = list.filter(i => i.id !== itemIdentifier);
