@@ -8,7 +8,7 @@ $userRole = $_SESSION['role'] ?? 'guest';
 
 if (!$recipeId) { header("Location: index.php"); exit; }
 
-// --- תיקון קריטי: סנכרון סטטוס מול ה-DB בזמן אמת ---
+// --- 1. סנכרון סטטוס מול ה-DB בזמן אמת ---
 if ($userId) {
     $stmt_check = $pdo->prepare("SELECT status, role FROM users WHERE id = ?");
     $stmt_check->execute([$userId]);
@@ -20,7 +20,12 @@ if ($userId) {
 }
 $userStatus = ($userRole === 'admin') ? 'approved' : ($_SESSION['status'] ?? 'pending');
 
-// --- 1. מונה צפיות חכם ---
+// שליפת מזהה בעל המתכון לבדיקת התראות
+$check_owner = $pdo->prepare("SELECT user_id FROM recipes WHERE id = ?");
+$check_owner->execute([$recipeId]);
+$recipeOwnerId = $check_owner->fetchColumn();
+
+// --- 2. מונה צפיות חכם ---
 if ($userId) {
     try {
         $stmt_view_log = $pdo->prepare("INSERT IGNORE INTO recipe_views (recipe_id, user_id) VALUES (?, ?)");
@@ -31,7 +36,7 @@ if ($userId) {
     } catch (PDOException $e) { }
 }
 
-// --- 2. לוגיקת אדמין (פרטי/ציבורי) ---
+// --- 3. לוגיקת אדמין (פרטי/ציבורי) ---
 if (isset($_POST['toggle_privacy']) && $userRole === 'admin') {
     $stmt_status = $pdo->prepare("SELECT is_public FROM recipes WHERE id = ?");
     $stmt_status->execute([$recipeId]);
@@ -40,35 +45,46 @@ if (isset($_POST['toggle_privacy']) && $userRole === 'admin') {
     header("Location: view_recipe.php?id=$recipeId"); exit;
 }
 
-// --- 3. לייקים ---
+// --- 4. לייקים + מערכת התראות ---
 if (isset($_POST['toggle_like']) && $userId && $userStatus === 'approved') {
     $check = $pdo->prepare("SELECT id FROM likes WHERE user_id = ? AND recipe_id = ?");
     $check->execute([$userId, $recipeId]);
+    
     if ($check->fetch()) {
         $pdo->prepare("DELETE FROM likes WHERE user_id = ? AND recipe_id = ?")->execute([$userId, $recipeId]);
     } else {
         $pdo->prepare("INSERT INTO likes (user_id, recipe_id) VALUES (?, ?)")->execute([$userId, $recipeId]);
+        
+        // יצירת התראה לבעל המתכון (רק אם זה לא הוא עצמו)
+        if ($recipeOwnerId && $recipeOwnerId != $userId) {
+            $pdo->prepare("INSERT INTO notifications (user_id, actor_id, recipe_id, is_read) VALUES (?, ?, ?, 0)")
+                ->execute([$recipeOwnerId, $userId, $recipeId]);
+        }
     }
     header("Location: view_recipe.php?id=$recipeId"); exit;
 }
 
-// --- 4. תגובות ---
+// --- 5. תגובות + מערכת התראות מפורטת ---
 if (isset($_POST['submit_comment']) && $userId && !empty(trim($_POST['comment_text']))) {
     if ($userStatus !== 'approved') die("גישה חסומה.");
     $parentId = !empty($_POST['parent_id']) ? (int)$_POST['parent_id'] : null;
+    $commentText = $_POST['comment_text'];
     
-    if ($parentId) {
-        $checkParent = $pdo->prepare("SELECT parent_id FROM comments WHERE id = ?");
-        $checkParent->execute([$parentId]);
-        if ($checkParent->fetchColumn() !== null) { die("לא ניתן להגיב על תגובה ברמה זו."); }
+    // הכנסת התגובה לטבלת התגובות
+    $stmt_comm = $pdo->prepare("INSERT INTO comments (recipe_id, user_id, comment_text, parent_id) VALUES (?, ?, ?, ?)");
+    $stmt_comm->execute([$recipeId, $userId, $commentText, $parentId]);
+    $lastCommentId = $pdo->lastInsertId(); 
+
+    // יצירת התראה לבעל המתכון כולל ה-comment_id
+    if ($recipeOwnerId && $recipeOwnerId != $userId) {
+        $pdo->prepare("INSERT INTO notifications (user_id, actor_id, recipe_id, comment_id, is_read) VALUES (?, ?, ?, ?, 0)")
+            ->execute([$recipeOwnerId, $userId, $recipeId, $lastCommentId]);
     }
 
-    $pdo->prepare("INSERT INTO comments (recipe_id, user_id, comment_text, parent_id) VALUES (?, ?, ?, ?)")
-        ->execute([$recipeId, $userId, $_POST['comment_text'], $parentId]);
     header("Location: view_recipe.php?id=$recipeId#comments"); exit;
 }
 
-// --- שליפת נתונים מתוקנת (צפיות ולייקים) ---
+// --- שליפת נתונים לתצוגה ---
 $recipe_sql = "SELECT r.*, u.username, u.profile_img, 
                (SELECT COUNT(*) FROM likes WHERE recipe_id = r.id) as likes_count, 
                (SELECT COUNT(*) FROM likes WHERE recipe_id = r.id AND user_id = ?) as user_liked,
@@ -99,6 +115,7 @@ function getYouTubeEmbed($url) {
     return null;
 }
 
+// פונקציה רקורסיבית להצגת תגובות
 function renderComments($parentId, $commentsByParent, $userId, $userStatus, $isReply = false) {
     if (!isset($commentsByParent[$parentId])) return;
     foreach ($commentsByParent[$parentId] as $c) { 
@@ -108,8 +125,10 @@ function renderComments($parentId, $commentsByParent, $userId, $userStatus, $isR
         <div class="comment-node" style="margin-bottom: 15px;">
             <div class="comment-main" style="background: rgba(255,255,255,0.03); padding: 15px; border-radius: 15px; border: 1px solid rgba(255,255,255,0.05);">
                 <div style="display:flex; align-items:center; gap:8px;">
-                    <img src="<?php echo $c['profile_img'] ?: 'user-default.png'; ?>" style="width:30px; height:30px; border-radius:50%;">
-                    <b><?php echo htmlspecialchars($c['username']); ?> <?php echo $isAdmin ? '👑' : ''; ?></b>
+                    <a href="profile.php?id=<?php echo $c['user_id']; ?>" style="text-decoration:none; color:inherit; display:flex; align-items:center; gap:5px;">
+                        <img src="<?php echo $c['profile_img'] ?: 'user-default.png'; ?>" style="width:30px; height:30px; border-radius:50%;">
+                        <b><?php echo htmlspecialchars($c['username']); ?> <?php echo $isAdmin ? '👑' : ''; ?></b>
+                    </a>
                 </div>
                 <p style="margin: 10px 0;"><?php echo nl2br(htmlspecialchars($c['comment_text'])); ?></p>
                 
@@ -173,8 +192,10 @@ function renderComments($parentId, $commentsByParent, $userId, $userStatus, $isR
 <div class="container">
     <div class="meta-bar">
         <div style="display: flex; align-items: center; gap: 12px;">
-            <img src="<?php echo $recipe['profile_img'] ?: 'user-default.png'; ?>" style="width:45px; height:45px; border-radius:50%; border: 2px solid var(--accent);">
-            <div><b><?php echo htmlspecialchars($recipe['username']); ?></b><br><small>👁️ <?php echo number_format($recipe['real_views']); ?> צפיות</small></div>
+            <a href="profile.php?id=<?php echo $recipe['user_id']; ?>" style="text-decoration: none; color: inherit; display: flex; align-items: center; gap: 10px;">
+                <img src="<?php echo $recipe['profile_img'] ?: 'user-default.png'; ?>" style="width:45px; height:45px; border-radius:50%; border: 2px solid var(--accent);">
+                <div><b><?php echo htmlspecialchars($recipe['username']); ?></b><br><small>👁️ <?php echo number_format($recipe['real_views']); ?> צפיות</small></div>
+            </a>
         </div>
         <div style="display: flex; gap: 8px; flex-wrap: wrap; justify-content: center;">
             <a href="index.php" class="btn-action">🏠 הביתה</a>
@@ -200,7 +221,6 @@ function renderComments($parentId, $commentsByParent, $userId, $userStatus, $isR
                     <input type="checkbox" class="ing-checkbox" 
                            data-name="<?php echo htmlspecialchars($ing['ingredient_name']); ?>" 
                            data-line="<?php echo htmlspecialchars($line); ?>"
-                           /* שינוי: מאפשר הוספה לסל לכל מחובר, גם אם הוא pending */
                            <?php echo (!$userId) ? 'disabled' : ''; ?>
                            onchange="updateList(this)"
                            style="width:18px; height:18px; accent-color: var(--accent);">
