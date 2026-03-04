@@ -20,12 +20,25 @@ if ($userId) {
 }
 $userStatus = ($userRole === 'admin') ? 'approved' : ($_SESSION['status'] ?? 'pending');
 
-// שליפת מזהה בעל המתכון לבדיקת התראות
+// שליפת מזהה בעל המתכון
 $check_owner = $pdo->prepare("SELECT user_id FROM recipes WHERE id = ?");
 $check_owner->execute([$recipeId]);
 $recipeOwnerId = $check_owner->fetchColumn();
 
-// --- 2. מונה צפיות חכם ---
+// --- 2. לוגיקת דיווח על תגובה ---
+if (isset($_POST['report_comment']) && $userId && $userStatus === 'approved') {
+    $commentId = (int)$_POST['report_comment_id'];
+    $reason = $_POST['report_reason'] ?? 'לא צוינה סיבה';
+    
+    $admins = $pdo->query("SELECT id FROM users WHERE role = 'admin'")->fetchAll(PDO::FETCH_COLUMN);
+    foreach ($admins as $adminId) {
+        $pdo->prepare("INSERT INTO notifications (user_id, actor_id, recipe_id, comment_id, report_reason, is_read) VALUES (?, ?, ?, ?, ?, 0)")
+            ->execute([$adminId, $userId, $recipeId, $commentId, $reason]);
+    }
+    header("Location: view_recipe.php?id=$recipeId&reported=1#comments"); exit;
+}
+
+// --- 3. מונה צפיות חכם ---
 if ($userId) {
     try {
         $stmt_view_log = $pdo->prepare("INSERT IGNORE INTO recipe_views (recipe_id, user_id) VALUES (?, ?)");
@@ -36,7 +49,7 @@ if ($userId) {
     } catch (PDOException $e) { }
 }
 
-// --- 3. לוגיקת אדמין (פרטי/ציבורי) ---
+// --- 4. לוגיקת אדמין (פרטי/ציבורי) ---
 if (isset($_POST['toggle_privacy']) && $userRole === 'admin') {
     $stmt_status = $pdo->prepare("SELECT is_public FROM recipes WHERE id = ?");
     $stmt_status->execute([$recipeId]);
@@ -45,7 +58,7 @@ if (isset($_POST['toggle_privacy']) && $userRole === 'admin') {
     header("Location: view_recipe.php?id=$recipeId"); exit;
 }
 
-// --- 4. לייקים + מערכת התראות ---
+// --- 5. לייקים ---
 if (isset($_POST['toggle_like']) && $userId && $userStatus === 'approved') {
     $check = $pdo->prepare("SELECT id FROM likes WHERE user_id = ? AND recipe_id = ?");
     $check->execute([$userId, $recipeId]);
@@ -54,8 +67,6 @@ if (isset($_POST['toggle_like']) && $userId && $userStatus === 'approved') {
         $pdo->prepare("DELETE FROM likes WHERE user_id = ? AND recipe_id = ?")->execute([$userId, $recipeId]);
     } else {
         $pdo->prepare("INSERT INTO likes (user_id, recipe_id) VALUES (?, ?)")->execute([$userId, $recipeId]);
-        
-        // יצירת התראה לבעל המתכון (רק אם זה לא הוא עצמו)
         if ($recipeOwnerId && $recipeOwnerId != $userId) {
             $pdo->prepare("INSERT INTO notifications (user_id, actor_id, recipe_id, is_read) VALUES (?, ?, ?, 0)")
                 ->execute([$recipeOwnerId, $userId, $recipeId]);
@@ -64,34 +75,41 @@ if (isset($_POST['toggle_like']) && $userId && $userStatus === 'approved') {
     header("Location: view_recipe.php?id=$recipeId"); exit;
 }
 
-// --- 5. תגובות + מערכת התראות מפורטת ---
+// --- 6. תגובות (ניתוב התראות חכם) ---
 if (isset($_POST['submit_comment']) && $userId && !empty(trim($_POST['comment_text']))) {
     if ($userStatus !== 'approved') die("גישה חסומה.");
     $parentId = !empty($_POST['parent_id']) ? (int)$_POST['parent_id'] : null;
     $commentText = $_POST['comment_text'];
     
-    // הכנסת התגובה לטבלת התגובות
     $stmt_comm = $pdo->prepare("INSERT INTO comments (recipe_id, user_id, comment_text, parent_id) VALUES (?, ?, ?, ?)");
     $stmt_comm->execute([$recipeId, $userId, $commentText, $parentId]);
     $lastCommentId = $pdo->lastInsertId(); 
 
-    // יצירת התראה לבעל המתכון כולל ה-comment_id
-    if ($recipeOwnerId && $recipeOwnerId != $userId) {
-        $pdo->prepare("INSERT INTO notifications (user_id, actor_id, recipe_id, comment_id, is_read) VALUES (?, ?, ?, ?, 0)")
-            ->execute([$recipeOwnerId, $userId, $recipeId, $lastCommentId]);
+    // קביעת היעד להתראה
+    $targetUserId = null;
+    if ($parentId) {
+        $stmt_p = $pdo->prepare("SELECT user_id FROM comments WHERE id = ?");
+        $stmt_p->execute([$parentId]);
+        $targetUserId = $stmt_p->fetchColumn();
+    } else {
+        $targetUserId = $recipeOwnerId;
     }
 
+    if ($targetUserId && $targetUserId != $userId) {
+        $pdo->prepare("INSERT INTO notifications (user_id, actor_id, recipe_id, comment_id, is_read) VALUES (?, ?, ?, ?, 0)")
+            ->execute([$targetUserId, $userId, $recipeId, $lastCommentId]);
+    }
     header("Location: view_recipe.php?id=$recipeId#comments"); exit;
 }
 
 // --- שליפת נתונים לתצוגה ---
 $recipe_sql = "SELECT r.*, u.username, u.profile_img, 
-               (SELECT COUNT(*) FROM likes WHERE recipe_id = r.id) as likes_count, 
-               (SELECT COUNT(*) FROM likes WHERE recipe_id = r.id AND user_id = ?) as user_liked,
-               (SELECT COUNT(*) FROM recipe_views WHERE recipe_id = r.id) as real_views
-               FROM recipes r 
-               JOIN users u ON r.user_id = u.id 
-               WHERE r.id = ?";
+                (SELECT COUNT(*) FROM likes WHERE recipe_id = r.id) as likes_count, 
+                (SELECT COUNT(*) FROM likes WHERE recipe_id = r.id AND user_id = ?) as user_liked,
+                (SELECT COUNT(*) FROM recipe_views WHERE recipe_id = r.id) as real_views
+                FROM recipes r 
+                JOIN users u ON r.user_id = u.id 
+                WHERE r.id = ?";
 
 $recipe_stmt = $pdo->prepare($recipe_sql);
 $recipe_stmt->execute([$userId, $recipeId]);
@@ -105,7 +123,8 @@ $ingredients->execute([$recipeId]); $ingredients = $ingredients->fetchAll();
 $instructions = $pdo->prepare("SELECT * FROM instructions WHERE recipe_id = ? ORDER BY id ASC");
 $instructions->execute([$recipeId]); $instructions = $instructions->fetchAll();
 
-$allComments = $pdo->prepare("SELECT c.*, u.username, u.profile_img, u.role FROM comments c JOIN users u ON c.user_id = u.id WHERE c.recipe_id = ? ORDER BY c.created_at ASC");
+// --- שינוי כאן: הוספת DESC כדי שהתגובות החדשות יהיו למעלה ---
+$allComments = $pdo->prepare("SELECT c.*, u.username, u.profile_img, u.role FROM comments c JOIN users u ON c.user_id = u.id WHERE c.recipe_id = ? ORDER BY c.created_at DESC");
 $allComments->execute([$recipeId]);
 $commentsByParent = [];
 foreach ($allComments->fetchAll() as $c) { $commentsByParent[$c['parent_id'] ?? 0][] = $c; }
@@ -115,44 +134,56 @@ function getYouTubeEmbed($url) {
     return null;
 }
 
-// פונקציה רקורסיבית להצגת תגובות
 function renderComments($parentId, $commentsByParent, $userId, $userStatus, $isReply = false) {
     if (!isset($commentsByParent[$parentId])) return;
     foreach ($commentsByParent[$parentId] as $c) { 
         $isAdmin = ($c['role'] === 'admin');
         $childCount = isset($commentsByParent[$c['id']]) ? count($commentsByParent[$c['id']]) : 0;
         ?>
-        <div class="comment-node" style="margin-bottom: 15px;">
+        <div class="comment-node" style="margin-bottom: 20px;">
             <div class="comment-main" style="background: rgba(255,255,255,0.03); padding: 15px; border-radius: 15px; border: 1px solid rgba(255,255,255,0.05);">
-                <div style="display:flex; align-items:center; gap:8px;">
-                    <a href="profile.php?id=<?php echo $c['user_id']; ?>" style="text-decoration:none; color:inherit; display:flex; align-items:center; gap:5px;">
+                <div style="display:flex; justify-content: space-between; align-items:center;">
+                    <div style="display:flex; align-items:center; gap:8px;">
                         <img src="<?php echo $c['profile_img'] ?: 'user-default.png'; ?>" style="width:30px; height:30px; border-radius:50%;">
                         <b><?php echo htmlspecialchars($c['username']); ?> <?php echo $isAdmin ? '👑' : ''; ?></b>
-                    </a>
+                    </div>
+                    <?php if($userId && $userStatus === 'approved' && $userId != $c['user_id']): ?>
+                        <button onclick="toggleDiv('report-f-<?php echo $c['id']; ?>')" class="comment-action-btn" style="color: var(--danger); font-size: 0.8rem; border: 1px solid var(--danger); padding: 2px 8px; border-radius: 5px;">🚩 דווח על תגובה</button>
+                    <?php endif; ?>
                 </div>
-                <p style="margin: 10px 0;"><?php echo nl2br(htmlspecialchars($c['comment_text'])); ?></p>
+
+                <p style="margin: 12px 0; font-size: 0.95rem; line-height: 1.5;"><?php echo nl2br(htmlspecialchars($c['comment_text'])); ?></p>
                 
                 <div style="display:flex; gap:15px; align-items: center;">
                     <?php if($userId && $userStatus === 'approved' && !$isReply): ?>
                         <button onclick="toggleDiv('reply-f-<?php echo $c['id']; ?>')" class="comment-action-btn">השב ↩️</button>
                     <?php endif; ?>
-
                     <?php if($childCount > 0): ?>
-                        <button onclick="toggleComments(<?php echo $c['id']; ?>, this)" class="comment-action-btn" data-count="<?php echo $childCount; ?>">
-                            הצג <?php echo $childCount; ?> תגובות ▼
-                        </button>
+                        <button onclick="toggleComments(<?php echo $c['id']; ?>, this)" class="comment-action-btn" data-count="<?php echo $childCount; ?>">הצג <?php echo $childCount; ?> תגובות ▼</button>
                     <?php endif; ?>
+                </div>
+
+                <div id="report-f-<?php echo $c['id']; ?>" style="display:none; margin-top:15px; background: rgba(255, 71, 87, 0.15); padding: 15px; border-radius: 12px; border: 1px solid var(--danger);">
+                    <h4 style="margin: 0 0 10px 0; font-size: 0.9rem; color: #ff6b81;">דיווח על תגובה פוגענית</h4>
+                    <form method="POST">
+                        <input type="hidden" name="report_comment_id" value="<?php echo $c['id']; ?>">
+                        <textarea name="report_reason" placeholder="פרט כאן את סיבת הדיווח..." 
+                                  style="width:100%; padding:10px; border-radius:8px; border:1px solid rgba(255,255,255,0.2); background: #1e293b; color: white; margin-bottom: 10px; font-size: 0.85rem;" required></textarea>
+                        <div style="display:flex; gap:10px;">
+                            <button type="submit" name="report_comment" class="btn-submit" style="background:var(--danger); font-size:0.8rem; padding: 6px 15px;">שלח דיווח</button>
+                            <button type="button" onclick="toggleDiv('report-f-<?php echo $c['id']; ?>')" class="btn-submit" style="background:rgba(255,255,255,0.1); font-size:0.8rem; padding: 6px 15px;">ביטול</button>
+                        </div>
+                    </form>
                 </div>
 
                 <div id="reply-f-<?php echo $c['id']; ?>" style="display:none; margin-top:10px;">
                     <form method="POST">
                         <input type="hidden" name="parent_id" value="<?php echo $c['id']; ?>">
-                        <textarea name="comment_text" rows="1" placeholder="תגובה..."></textarea>
+                        <textarea name="comment_text" rows="1" placeholder="כתבו תגובה..."></textarea>
                         <button type="submit" name="submit_comment" class="btn-submit" style="padding:4px 10px; font-size:0.8rem; margin-top:5px;">שלח</button>
                     </form>
                 </div>
             </div>
-            
             <?php if (!$isReply && $childCount > 0): ?>
             <div id="replies-<?php echo $c['id']; ?>" class="replies-container" style="display:none; margin-right: 30px; border-right: 2px solid var(--accent); padding-right: 15px; margin-top:10px;">
                 <?php renderComments($c['id'], $commentsByParent, $userId, $userStatus, true); ?>
@@ -168,28 +199,99 @@ function renderComments($parentId, $commentsByParent, $userId, $userStatus, $isR
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title><?php echo htmlspecialchars($recipe['title']); ?> | RecipeMaster</title>
-    <style>
-        :root { --accent: #00f2fe; --bg: #0f172a; --glass: rgba(255, 255, 255, 0.05); --danger: #ff4757; --wa: #25D366; }
-        body { background: var(--bg); color: white; font-family: 'Segoe UI', sans-serif; margin: 0; padding-bottom: 50px; }
-        .hero { width: 100%; height: 350px; background: url('<?php echo htmlspecialchars($recipe['image_url']); ?>') center/cover; position: relative; }
-        .hero-overlay { position: absolute; inset: 0; background: linear-gradient(transparent, var(--bg)); display: flex; align-items: flex-end; justify-content: center; padding-bottom: 30px; }
-        .container { max-width: 900px; margin: -30px auto 0; padding: 0 20px; }
-        .meta-bar { display: flex; justify-content: space-between; align-items: center; background: var(--glass); backdrop-filter: blur(15px); padding: 15px 25px; border-radius: 50px; border: 1px solid rgba(255,255,255,0.1); margin-bottom: 30px; gap: 10px; flex-wrap: wrap; }
-        .btn-action { background: none; border: 1px solid rgba(255,255,255,0.2); color: white; padding: 8px 15px; border-radius: 50px; cursor: pointer; text-decoration: none; font-size: 0.85rem; display: flex; align-items: center; gap: 5px; transition: 0.3s; }
-        .btn-action.active { border-color: var(--danger); color: var(--danger); }
-        .comment-action-btn { background:none; border:none; color:var(--accent); cursor:pointer; font-size:0.85rem; padding: 5px 0; font-weight: bold; }
-        .grid { display: grid; grid-template-columns: 1fr 1.5fr; gap: 20px; }
-        @media (max-width: 768px) { .grid { grid-template-columns: 1fr; } }
-        .card { background: var(--glass); padding: 25px; border-radius: 20px; border: 1px solid rgba(255,255,255,0.1); }
-        textarea { width: 100%; background: rgba(0,0,0,0.3); border: 1px solid rgba(255,255,255,0.1); color: white; border-radius: 15px; padding: 12px; resize: none; box-sizing: border-box; }
-        .btn-submit { background: var(--accent); color: var(--bg); border: none; padding: 8px 20px; border-radius: 50px; font-weight: bold; cursor: pointer; }
-    </style>
+ <style>
+    :root { 
+        --accent: #00f2fe; 
+        --bg: #0f172a; 
+        --glass: rgba(255, 255, 255, 0.05); 
+        --danger: #ff4757; 
+        --wa: #25D366; 
+        --success: #27ae60;
+    }
+    
+    body { background: var(--bg); color: white; font-family: 'Segoe UI', sans-serif; margin: 0; padding-bottom: 50px; }
+    
+    .hero { width: 100%; height: 350px; background: url('<?php echo htmlspecialchars($recipe['image_url']); ?>') center/cover; position: relative; }
+    
+    /* תיקון השקיפות כדי שלא תסתיר את הדיווח */
+    .hero-overlay { 
+        position: absolute; 
+        inset: 0; 
+        background: linear-gradient(to bottom, rgba(15, 23, 42, 0), var(--bg)); 
+        display: flex; 
+        align-items: flex-end; 
+        justify-content: center; 
+        padding-bottom: 50px; 
+    }
+    
+    /*Container מעודכן ללא margin שלילי שגורם להסתרת אלמנטים */
+    .container { max-width: 900px; margin: 0 auto; padding: 0 20px; position: relative; }
+
+    /* עיצוב הודעת הדיווח הירוקה - תיקון החלק השחור */
+    .success-banner { 
+        background: var(--success); 
+        color: white; 
+        padding: 15px; 
+        border-radius: 12px; 
+        margin-bottom: 25px; 
+        text-align: center; 
+        font-weight: bold; 
+        position: relative; /* גורם לו להופיע מעל השכבות האחרות */
+        z-index: 10;
+        margin-top: -20px; /* מזיז רק את הבאנר מעט למעלה */
+        box-shadow: 0 10px 30px rgba(0,0,0,0.3);
+        border: 1px solid rgba(255,255,255,0.2);
+    }
+
+    .meta-bar { 
+        display: flex; 
+        justify-content: space-between; 
+        align-items: center; 
+        background: var(--glass); 
+        backdrop-filter: blur(15px); 
+        padding: 15px 25px; 
+        border-radius: 50px; 
+        border: 1px solid rgba(255,255,255,0.1); 
+        margin-bottom: 30px; 
+        gap: 10px; 
+        flex-wrap: wrap; 
+        position: relative;
+        z-index: 5;
+    }
+
+    .btn-action { background: none; border: 1px solid rgba(255,255,255,0.2); color: white; padding: 8px 15px; border-radius: 50px; cursor: pointer; text-decoration: none; font-size: 0.85rem; display: flex; align-items: center; gap: 5px; transition: 0.3s; }
+    .btn-action.active { border-color: var(--danger); color: var(--danger); }
+    .comment-action-btn { background:none; border:none; color:var(--accent); cursor:pointer; font-size:0.85rem; padding: 5px 0; font-weight: bold; }
+    .grid { display: grid; grid-template-columns: 1fr 1.5fr; gap: 20px; }
+    
+    @media (max-width: 768px) { .grid { grid-template-columns: 1fr; } }
+    
+    .card { background: var(--glass); padding: 25px; border-radius: 20px; border: 1px solid rgba(255,255,255,0.1); }
+    
+    /* עדכון ה-textarea כדי שלא יראה "שחור מדי" */
+    textarea { 
+        width: 100%; 
+        background: rgba(255, 255, 255, 0.05); 
+        border: 1px solid rgba(255,255,255,0.1); 
+        color: white; 
+        border-radius: 15px; 
+        padding: 12px; 
+        resize: none; 
+        box-sizing: border-box; 
+    }
+    
+    .btn-submit { background: var(--accent); color: var(--bg); border: none; padding: 8px 20px; border-radius: 50px; font-weight: bold; cursor: pointer; }
+</style>
 </head>
 <body>
 
 <div class="hero"><div class="hero-overlay"><h1><?php echo htmlspecialchars($recipe['title']); ?></h1></div></div>
 
 <div class="container">
+    <?php if(isset($_GET['reported'])): ?>
+        <div style="background: #27ae60; color: white; padding: 15px; border-radius: 10px; margin-bottom: 20px; text-align: center; font-weight: bold;">✅ הדיווח התקבל ויועבר לטיפול המנהלים. תודה!</div>
+    <?php endif; ?>
+
     <div class="meta-bar">
         <div style="display: flex; align-items: center; gap: 12px;">
             <a href="profile.php?id=<?php echo $recipe['user_id']; ?>" style="text-decoration: none; color: inherit; display: flex; align-items: center; gap: 10px;">
@@ -221,7 +323,6 @@ function renderComments($parentId, $commentsByParent, $userId, $userStatus, $isR
                     <input type="checkbox" class="ing-checkbox" 
                            data-name="<?php echo htmlspecialchars($ing['ingredient_name']); ?>" 
                            data-line="<?php echo htmlspecialchars($line); ?>"
-                           <?php echo (!$userId) ? 'disabled' : ''; ?>
                            onchange="updateList(this)"
                            style="width:18px; height:18px; accent-color: var(--accent);">
                     <span><?php echo htmlspecialchars($line); ?></span>
@@ -233,8 +334,11 @@ function renderComments($parentId, $commentsByParent, $userId, $userStatus, $isR
             <?php foreach ($instructions as $i => $ins): ?>
                 <p><b><?php echo $i+1; ?>.</b> <?php echo nl2br(htmlspecialchars($ins['instruction_text'])); ?></p>
             <?php endforeach; ?>
+            
             <?php if($embed = getYouTubeEmbed($recipe['video_url'])): ?>
-                <iframe src="<?php echo $embed; ?>" style="width:100%; aspect-ratio:16/9; border-radius:15px; border:none; margin-top:20px;"></iframe>
+                <div style="margin-top:20px;">
+                    <iframe src="<?php echo $embed; ?>" style="width:100%; aspect-ratio:16/9; border-radius:15px; border:none;" allowfullscreen></iframe>
+                </div>
             <?php endif; ?>
         </div>
     </div>
@@ -254,32 +358,24 @@ function renderComments($parentId, $commentsByParent, $userId, $userStatus, $isR
 <script>
 function shareWA(e) { e.preventDefault(); window.open("https://api.whatsapp.com/send?text=" + encodeURIComponent("תראו את המתכון הזה: " + window.location.href), "_blank"); }
 function toggleDiv(id) { const el = document.getElementById(id); el.style.display = (el.style.display === 'block') ? 'none' : 'block'; }
-
 function toggleComments(id, btn) {
     const container = document.getElementById('replies-' + id);
     const count = btn.getAttribute('data-count');
     if (container.style.display === 'none' || container.style.display === '') {
-        container.style.display = 'block';
-        btn.innerHTML = 'הצג פחות ▲';
+        container.style.display = 'block'; btn.innerHTML = 'הצג פחות ▲';
     } else {
-        container.style.display = 'none';
-        btn.innerHTML = 'הצג ' + count + ' תגובות ▼';
+        container.style.display = 'none'; btn.innerHTML = 'הצג ' + count + ' תגובות ▼';
     }
 }
 
 const cartKey = 'shopping_list_<?php echo $_SESSION['username'] ?? 'guest'; ?>';
 function updateList(cb) {
     let list = JSON.parse(localStorage.getItem(cartKey)) || [];
-    const name = cb.dataset.name;
-    const line = cb.dataset.line;
+    const name = cb.dataset.name; const line = cb.dataset.line;
     const recipeId = "<?php echo $recipeId; ?>";
     const id = recipeId + "_" + name;
-
-    if (cb.checked) {
-        list.push({ id: id, fullText: line });
-    } else {
-        list = list.filter(i => i.id !== id);
-    }
+    if (cb.checked) { list.push({ id: id, fullText: line }); } 
+    else { list = list.filter(i => i.id !== id); }
     localStorage.setItem(cartKey, JSON.stringify(list));
 }
 
