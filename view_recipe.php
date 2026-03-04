@@ -35,7 +35,7 @@ if (isset($_POST['report_comment']) && $userId && $userStatus === 'approved') {
         $pdo->prepare("INSERT INTO notifications (user_id, actor_id, recipe_id, comment_id, report_reason, is_read) VALUES (?, ?, ?, ?, ?, 0)")
             ->execute([$adminId, $userId, $recipeId, $commentId, $reason]);
     }
-    header("Location: view_recipe.php?id=$recipeId&reported=1#comments"); exit;
+    header("Location: view_recipe.php?id=$recipeId&reported=1"); exit;
 }
 
 // --- 3. מונה צפיות חכם ---
@@ -85,7 +85,6 @@ if (isset($_POST['submit_comment']) && $userId && !empty(trim($_POST['comment_te
     $stmt_comm->execute([$recipeId, $userId, $commentText, $parentId]);
     $lastCommentId = $pdo->lastInsertId(); 
 
-    // קביעת היעד להתראה
     $targetUserId = null;
     if ($parentId) {
         $stmt_p = $pdo->prepare("SELECT user_id FROM comments WHERE id = ?");
@@ -103,15 +102,13 @@ if (isset($_POST['submit_comment']) && $userId && !empty(trim($_POST['comment_te
 }
 
 // --- שליפת נתונים לתצוגה ---
-$recipe_sql = "SELECT r.*, u.username, u.profile_img, 
+$recipe_stmt = $pdo->prepare("SELECT r.*, u.username, u.profile_img, 
                 (SELECT COUNT(*) FROM likes WHERE recipe_id = r.id) as likes_count, 
                 (SELECT COUNT(*) FROM likes WHERE recipe_id = r.id AND user_id = ?) as user_liked,
                 (SELECT COUNT(*) FROM recipe_views WHERE recipe_id = r.id) as real_views
                 FROM recipes r 
                 JOIN users u ON r.user_id = u.id 
-                WHERE r.id = ?";
-
-$recipe_stmt = $pdo->prepare($recipe_sql);
+                WHERE r.id = ?");
 $recipe_stmt->execute([$userId, $recipeId]);
 $recipe = $recipe_stmt->fetch();
 
@@ -123,7 +120,6 @@ $ingredients->execute([$recipeId]); $ingredients = $ingredients->fetchAll();
 $instructions = $pdo->prepare("SELECT * FROM instructions WHERE recipe_id = ? ORDER BY id ASC");
 $instructions->execute([$recipeId]); $instructions = $instructions->fetchAll();
 
-// --- שינוי כאן: הוספת DESC כדי שהתגובות החדשות יהיו למעלה ---
 $allComments = $pdo->prepare("SELECT c.*, u.username, u.profile_img, u.role FROM comments c JOIN users u ON c.user_id = u.id WHERE c.recipe_id = ? ORDER BY c.created_at DESC");
 $allComments->execute([$recipeId]);
 $commentsByParent = [];
@@ -145,7 +141,10 @@ function renderComments($parentId, $commentsByParent, $userId, $userStatus, $isR
                 <div style="display:flex; justify-content: space-between; align-items:center;">
                     <div style="display:flex; align-items:center; gap:8px;">
                         <img src="<?php echo $c['profile_img'] ?: 'user-default.png'; ?>" style="width:30px; height:30px; border-radius:50%;">
-                        <b><?php echo htmlspecialchars($c['username']); ?> <?php echo $isAdmin ? '👑' : ''; ?></b>
+                        <div>
+                            <b><?php echo htmlspecialchars($c['username']); ?> <?php echo $isAdmin ? '👑' : ''; ?></b><br>
+                            <small style="opacity: 0.5; font-size: 0.75rem;"><?php echo date('d/m/Y H:i', strtotime($c['created_at'])); ?></small>
+                        </div>
                     </div>
                     <?php if($userId && $userStatus === 'approved' && $userId != $c['user_id']): ?>
                         <button onclick="toggleDiv('report-f-<?php echo $c['id']; ?>')" class="comment-action-btn" style="color: var(--danger); font-size: 0.8rem; border: 1px solid var(--danger); padding: 2px 8px; border-radius: 5px;">🚩 דווח על תגובה</button>
@@ -199,7 +198,7 @@ function renderComments($parentId, $commentsByParent, $userId, $userStatus, $isR
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title><?php echo htmlspecialchars($recipe['title']); ?> | RecipeMaster</title>
- <style>
+<style>
     :root { 
         --accent: #00f2fe; 
         --bg: #0f172a; 
@@ -213,7 +212,6 @@ function renderComments($parentId, $commentsByParent, $userId, $userStatus, $isR
     
     .hero { width: 100%; height: 350px; background: url('<?php echo htmlspecialchars($recipe['image_url']); ?>') center/cover; position: relative; }
     
-    /* תיקון השקיפות כדי שלא תסתיר את הדיווח */
     .hero-overlay { 
         position: absolute; 
         inset: 0; 
@@ -224,10 +222,9 @@ function renderComments($parentId, $commentsByParent, $userId, $userStatus, $isR
         padding-bottom: 50px; 
     }
     
-    /*Container מעודכן ללא margin שלילי שגורם להסתרת אלמנטים */
     .container { max-width: 900px; margin: 0 auto; padding: 0 20px; position: relative; }
 
-    /* עיצוב הודעת הדיווח הירוקה - תיקון החלק השחור */
+    /* עיצוב הודעת הדיווח הירוקה - מתוקן למניעת החלק השחור */
     .success-banner { 
         background: var(--success); 
         color: white; 
@@ -236,9 +233,9 @@ function renderComments($parentId, $commentsByParent, $userId, $userStatus, $isR
         margin-bottom: 25px; 
         text-align: center; 
         font-weight: bold; 
-        position: relative; /* גורם לו להופיע מעל השכבות האחרות */
-        z-index: 10;
-        margin-top: -20px; /* מזיז רק את הבאנר מעט למעלה */
+        position: relative; 
+        z-index: 50;
+        margin-top: -20px; 
         box-shadow: 0 10px 30px rgba(0,0,0,0.3);
         border: 1px solid rgba(255,255,255,0.2);
     }
@@ -268,7 +265,6 @@ function renderComments($parentId, $commentsByParent, $userId, $userStatus, $isR
     
     .card { background: var(--glass); padding: 25px; border-radius: 20px; border: 1px solid rgba(255,255,255,0.1); }
     
-    /* עדכון ה-textarea כדי שלא יראה "שחור מדי" */
     textarea { 
         width: 100%; 
         background: rgba(255, 255, 255, 0.05); 
@@ -289,7 +285,7 @@ function renderComments($parentId, $commentsByParent, $userId, $userStatus, $isR
 
 <div class="container">
     <?php if(isset($_GET['reported'])): ?>
-        <div style="background: #27ae60; color: white; padding: 15px; border-radius: 10px; margin-bottom: 20px; text-align: center; font-weight: bold;">✅ הדיווח התקבל ויועבר לטיפול המנהלים. תודה!</div>
+        <div class="success-banner">✅ הדיווח התקבל ויועבר לטיפול המנהלים. תודה!</div>
     <?php endif; ?>
 
     <div class="meta-bar">
