@@ -138,11 +138,14 @@ $categories = $pdo->query("SELECT * FROM categories ORDER BY id ASC")->fetchAll(
             <?php endforeach; ?>
         </select>
 
-        <div class="upload-area">
-            <div id="upload-text">📸 לחץ כאן להעלאת תמונה</div>
-            <input type="file" name="recipe_img" accept="image/*" onchange="previewImg(event)">
-            <img id="preview">
-        </div>
+<div class="upload-area" style="position: relative;">
+    <div id="upload-text">📸 לחץ כאן להעלאת תמונה</div>
+    <input type="file" name="recipe_img" id="recipe_img_input" accept="image/*" onchange="previewImg(event)">
+    <img id="preview">
+    
+    <button type="button" id="remove-img-btn" onclick="removeSelectedImg(event)" 
+            style="display:none; position: absolute; top: 10px; left: 10px; background: var(--danger); color: white; border: none; border-radius: 50%; width: 30px; height: 30px; cursor: pointer; z-index: 10;">✕</button>
+</div>
 
         <input type="url" name="video_url" placeholder="🎥 קישור ליוטיוב (אופציונלי)">
 
@@ -154,7 +157,7 @@ $categories = $pdo->query("SELECT * FROM categories ORDER BY id ASC")->fetchAll(
         <h3 style="color: var(--accent);">🍎 מצרכים</h3>
         <div id="ing-area">
             <div class="row">
-                <input type="text" name="ing_amounts[]" placeholder="כמות" style="flex: 1;">
+                <input type="text" name="ing_amounts[]" placeholder="כמות (מספר וברבים)" style="flex: 1;">
                 <input type="text" name="ing_names[]" placeholder="שם המצרך" style="flex: 2;">
                 <input type="text" name="ing_descs[]" placeholder="תיאור" style="flex: 2;">
             </div>
@@ -174,23 +177,47 @@ $categories = $pdo->query("SELECT * FROM categories ORDER BY id ASC")->fetchAll(
 <script>
 function previewImg(e) {
     const file = e.target.files[0];
+    const preview = document.getElementById('preview');
+    const uploadText = document.getElementById('upload-text');
+    const removeBtn = document.getElementById('remove-img-btn');
+
     if (file) {
         const reader = new FileReader();
         reader.onload = () => {
-            const img = document.getElementById('preview');
-            img.src = reader.result;
-            img.style.display = 'block';
-            document.getElementById('upload-text').style.display = 'none';
+            preview.src = reader.result;
+            preview.style.display = 'block';
+            uploadText.style.display = 'none';
+            removeBtn.style.display = 'block'; // הצגת כפתור המחיקה
         }
         reader.readAsDataURL(file);
     }
+}
+
+function removeSelectedImg(e) {
+    // מניעת הפעלת בחירת הקובץ מחדש בגלל ה-Bubbling של האירוע
+    e.stopPropagation();
+    e.preventDefault();
+
+    const input = document.getElementById('recipe_img_input');
+    const preview = document.getElementById('preview');
+    const uploadText = document.getElementById('upload-text');
+    const removeBtn = document.getElementById('remove-img-btn');
+
+    // איפוס ה-input (חשוב מאוד כדי שהשרת לא יקבל קובץ)
+    input.value = "";
+    
+    // איפוס התצוגה המקדימה
+    preview.src = "";
+    preview.style.display = 'none';
+    uploadText.style.display = 'block';
+    removeBtn.style.display = 'none';
 }
 
 function addIng() {
     const div = document.createElement('div');
     div.className = 'row';
     div.innerHTML = `
-        <input type="text" name="ing_amounts[]" placeholder=\"כמות\" style=\"flex: 1;\">
+        <input type="text" name="ing_amounts[]" placeholder=\"כמות (מספר וברבים)" style=\"flex: 1;\">
         <input type=\"text\" name=\"ing_names[]\" placeholder=\"שם המצרך\" style=\"flex: 2;\">
         <input type=\"text\" name=\"ing_descs[]\" placeholder=\"תיאור\" style=\"flex: 2;\">
         <button type=\"button\" class=\"btn-remove\" onclick=\"this.parentElement.remove()\">✕</button>
