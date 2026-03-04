@@ -9,6 +9,20 @@ if (!isset($_SESSION['role']) || $_SESSION['role'] !== 'admin') {
 
 $currentAdminId = $_SESSION['user_id'];
 
+/**
+ * פונקציה לשליחת התראה למשתמש על פעולת ניהול
+ * עטופה ב-try-catch כדי למנוע קריסה אם הטבלה חסרה
+ */
+function sendAdminNotification($pdo, $userId, $actorId) {
+    try {
+        $stmt = $pdo->prepare("INSERT INTO notifications (user_id, actor_id, recipe_id, is_read) VALUES (?, ?, 0, 0)");
+        $stmt->execute([$userId, $actorId]);
+    } catch (PDOException $e) {
+        // רושם את השגיאה ללוג של השרת במקום להקריס את הדף
+        error_log("Notification error: " . $e->getMessage());
+    }
+}
+
 // פונקציית עזר לבדיקה אם המטרה היא מנהל
 function isTargetAdmin($pdo, $id) {
     $stmt = $pdo->prepare("SELECT role FROM users WHERE id = ?");
@@ -22,6 +36,10 @@ function isTargetAdmin($pdo, $id) {
 if (isset($_GET['approve_user'])) {
     $userIdToApprove = (int)$_GET['approve_user'];
     $pdo->prepare("UPDATE users SET status = 'approved' WHERE id = ?")->execute([$userIdToApprove]);
+    
+    // שליחת התראה
+    sendAdminNotification($pdo, $userIdToApprove, $currentAdminId);
+    
     if ($userIdToApprove == $_SESSION['user_id']) { $_SESSION['status'] = 'approved'; }
     header("Location: admin_users.php?status=user_approved"); exit;
 }
@@ -39,15 +57,24 @@ if (isset($_GET['ban_user'])) {
 
 // 3. ביטול חסימה (Unban)
 if (isset($_GET['unban_user'])) {
-    $pdo->prepare("UPDATE users SET status = 'approved' WHERE id = ?")->execute([(int)$_GET['unban_user']]);
+    $targetId = (int)$_GET['unban_user'];
+    $pdo->prepare("UPDATE users SET status = 'approved' WHERE id = ?")->execute([$targetId]);
+    
+    // שליחת התראה
+    sendAdminNotification($pdo, $targetId, $currentAdminId);
+    
     header("Location: admin_users.php?status=user_unbanned"); exit;
 }
 
-// 4. שינוי תפקיד
+// 4. שינוי תפקיד למנהל
 if (isset($_GET['toggle_role'])) {
     $targetId = (int)$_GET['toggle_role'];
     if ($targetId != $currentAdminId && !isTargetAdmin($pdo, $targetId)) { 
         $pdo->prepare("UPDATE users SET role = 'admin' WHERE id = ?")->execute([$targetId]);
+        
+        // שליחת התראה
+        sendAdminNotification($pdo, $targetId, $currentAdminId);
+        
         header("Location: admin_users.php?status=role_updated"); exit;
     }
 }
@@ -81,29 +108,15 @@ $bannedUsers = $pdo->query("SELECT * FROM users WHERE status = 'banned' ORDER BY
         body { background: var(--bg); color: white; font-family: 'Segoe UI', sans-serif; padding: 40px 20px; margin: 0; }
         .container { max-width: 1100px; margin: 0 auto; }
         .header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 40px; }
-        
-        /* עיצוב שורת החיפוש */
-        .search-container { margin-bottom: 25px; position: relative; }
-        .admin-search { 
-            width: 100%; padding: 15px 45px 15px 15px; border-radius: 15px; 
-            background: var(--card); border: 1px solid rgba(255,255,255,0.1); 
-            color: white; font-size: 1rem; outline: none; transition: 0.3s;
-        }
-        .admin-search:focus { border-color: var(--accent); box-shadow: 0 0 15px rgba(0, 242, 254, 0.2); }
-        .search-icon { position: absolute; right: 15px; top: 50%; transform: translateY(-50%); opacity: 0.5; }
-
-        .section-title { margin: 30px 0 15px; font-size: 1.4rem; display: flex; align-items: center; gap: 10px; }
-        table { width: 100%; border-collapse: collapse; background: var(--card); border-radius: 20px; overflow: hidden; border: 1px solid rgba(255,255,255,0.1); margin-bottom: 40px; }
+        .admin-search { width: 100%; padding: 15px; border-radius: 15px; background: var(--card); border: 1px solid rgba(255,255,255,0.1); color: white; outline: none; box-sizing: border-box; }
+        table { width: 100%; border-collapse: collapse; background: var(--card); border-radius: 20px; overflow: hidden; margin-bottom: 40px; border: 1px solid rgba(255,255,255,0.1); }
         th, td { padding: 15px 20px; text-align: right; border-bottom: 1px solid rgba(255,255,255,0.05); }
         th { background: rgba(0, 242, 254, 0.1); color: var(--accent); }
-        
-        .btn { padding: 6px 12px; border-radius: 8px; text-decoration: none; font-size: 0.8rem; font-weight: bold; transition: 0.3s; cursor: pointer; display: inline-block; border: none; }
+        .btn { padding: 6px 12px; border-radius: 8px; text-decoration: none; font-size: 0.8rem; font-weight: bold; transition: 0.3s; cursor: pointer; border: none; display: inline-block; }
         .btn-approve { background: var(--success); color: white; }
         .btn-ban { background: var(--danger); color: white; }
         .btn-role { background: rgba(0, 242, 254, 0.1); color: var(--accent); border: 1px solid var(--accent); }
         .status-msg { background: var(--success); color: white; padding: 10px; border-radius: 10px; margin-bottom: 20px; text-align: center; }
-        
-        .no-results { display: none; text-align: center; padding: 20px; opacity: 0.6; }
     </style>
 </head>
 <body>
@@ -111,25 +124,22 @@ $bannedUsers = $pdo->query("SELECT * FROM users WHERE status = 'banned' ORDER BY
 <div class="container">
     <div class="header">
         <h1>מרכז בקרה וניהול 🛡️</h1>
-        <a href="index.php" style="color: var(--accent); text-decoration: none;">🏠 חזרה לבית</a>
+        <a href="index.php" style="color: var(--accent); text-decoration: none; font-weight: bold;">🏠 חזרה לבית</a>
     </div>
 
-    <div class="search-container">
-        <span class="search-icon">🔍</span>
-        <input type="text" id="userSearch" class="admin-search" placeholder="חפש משתמש לפי שם..." onkeyup="filterUsers()">
-    </div>
+    <input type="text" id="userSearch" class="admin-search" placeholder="🔍 חפש משתמש לפי שם..." onkeyup="filterUsers()">
 
     <?php if(isset($_GET['status'])): ?>
-        <div class="status-msg">בוצע בהצלחה! המערכת עודכנה. ✅</div>
+        <div class="status-msg">הפעולה בוצעה בהצלחה! המערכת עודכנה. ✅</div>
     <?php endif; ?>
 
     <?php if(!empty($pendingUsers)): ?>
-        <h2 class="section-title" style="color: var(--warning);">⏳ ממתינים לאישור</h2>
+        <h2 style="color: var(--warning); margin: 30px 0 15px;">⏳ ממתינים לאישור</h2>
         <table>
             <tbody>
                 <?php foreach($pendingUsers as $pu): ?>
-                <tr>
-                    <td width="40%"><b><?php echo htmlspecialchars($pu['username']); ?></b></td>
+                <tr class="user-row">
+                    <td class="username-cell" width="40%"><b><?php echo htmlspecialchars($pu['username']); ?></b></td>
                     <td><?php echo htmlspecialchars($pu['email']); ?></td>
                     <td>
                         <a href="?approve_user=<?php echo $pu['id']; ?>" class="btn btn-approve">אשר ✅</a>
@@ -141,7 +151,7 @@ $bannedUsers = $pdo->query("SELECT * FROM users WHERE status = 'banned' ORDER BY
         </table>
     <?php endif; ?>
 
-    <h2 class="section-title">👥 ניהול משתמשים ותפקידים</h2>
+    <h2 style="margin: 30px 0 15px;">👥 ניהול משתמשים ותפקידים</h2>
     <table id="usersTable">
         <thead>
             <tr>
@@ -164,7 +174,7 @@ $bannedUsers = $pdo->query("SELECT * FROM users WHERE status = 'banned' ORDER BY
                 <td>
                     <?php if ($u['role'] !== 'admin'): ?>
                         <a href="?toggle_role=<?php echo $u['id']; ?>" class="btn btn-role" onclick="return confirm('למנות למנהל?')">👑 מנה למנהל</a>
-                        <a href="?clear_content=<?php echo $u['id']; ?>" class="btn" style="color: var(--warning);" onclick="return confirm('למחוק את כל התוכן של המשתמש?')">נקה תוכן</a>
+                        <a href="?clear_content=<?php echo $u['id']; ?>" class="btn" style="color: var(--warning);" onclick="return confirm('למחוק את כל התוכן?')">נקה תוכן</a>
                         <a href="?ban_user=<?php echo $u['id']; ?>" class="btn btn-ban">חסום</a>
                     <?php elseif ($u['id'] == $currentAdminId): ?>
                         <small style="opacity:0.5;">(אתה המנהל)</small>
@@ -176,10 +186,9 @@ $bannedUsers = $pdo->query("SELECT * FROM users WHERE status = 'banned' ORDER BY
             <?php endforeach; ?>
         </tbody>
     </table>
-    <div id="noResults" class="no-results">לא נמצאו משתמשים התואמים לחיפוש.</div>
 
     <?php if(!empty($bannedUsers)): ?>
-        <h2 class="section-title" style="color: var(--danger);">🚫 משתמשים חסומים</h2>
+        <h2 style="color: var(--danger); margin: 30px 0 15px;">🚫 משתמשים חסומים</h2>
         <table>
             <tbody>
                 <?php foreach($bannedUsers as $bu): ?>
@@ -194,29 +203,16 @@ $bannedUsers = $pdo->query("SELECT * FROM users WHERE status = 'banned' ORDER BY
 </div>
 
 <script>
-/**
- * פונקציה לסינון משתמשים בזמן אמת בתוך הטבלה
- */
 function filterUsers() {
     const input = document.getElementById('userSearch');
     const filter = input.value.toLowerCase();
     const rows = document.querySelectorAll('.user-row');
-    const noResults = document.getElementById('noResults');
-    let hasVisibleRows = false;
 
     rows.forEach(row => {
         const username = row.querySelector('.username-cell').textContent.toLowerCase();
-        if (username.includes(filter)) {
-            row.style.display = "";
-            hasVisibleRows = true;
-        } else {
-            row.style.display = "none";
-        }
+        row.style.display = username.includes(filter) ? "" : "none";
     });
-
-    noResults.style.display = hasVisibleRows ? "none" : "block";
 }
 </script>
-
 </body>
 </html>
