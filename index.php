@@ -4,20 +4,31 @@ require_once 'db.php';
 
 $isLoggedIn = isset($_SESSION['user_id']);
 $userRole = $_SESSION['role'] ?? 'guest';
+$userId = $_SESSION['user_id'] ?? null; // הוספנו את ה-ID של המשתמש המחובר
 
 // לוגיקה: מנהל מאושר תמיד, משתמשים לפי סשן
 $userStatus = ($userRole === 'admin') ? 'approved' : ($_SESSION['status'] ?? 'pending');
 
-// --- לוגיקת ספירת התראות למנהל ---
+// --- לוגיקת ספירת התראות למנהל וספירת פעמון אישי ---
 $pendingRecipesCount = 0;
 $pendingUsersCount = 0;
+$unreadNotifications = 0; // מונה חדש להתראות אישיות
 
-if ($userRole === 'admin') {
-    $stmt_pending_r = $pdo->query("SELECT COUNT(*) FROM recipes WHERE is_approved = 0");
-    $pendingRecipesCount = $stmt_pending_r->fetchColumn();
+if ($isLoggedIn) {
+    // שליפת מונה ההתראות האישיות (הפעמון)
+    $stmt_notif = $pdo->prepare("SELECT COUNT(*) FROM notifications WHERE user_id = ? AND is_read = 0");
+    $stmt_notif->execute([$userId]);
+    $unreadNotifications = $stmt_notif->fetchColumn();
 
-    $stmt_pending_u = $pdo->query("SELECT COUNT(*) FROM users WHERE status = 'pending'");
-    $pendingUsersCount = $stmt_pending_u->fetchColumn();
+    if ($userRole === 'admin') {
+        // ספירת מתכונים לאישור
+        $stmt_pending_r = $pdo->query("SELECT COUNT(*) FROM recipes WHERE is_approved = 0");
+        $pendingRecipesCount = $stmt_pending_r->fetchColumn();
+
+        // ספירת משתמשים הממתינים לאישור
+        $stmt_pending_u = $pdo->query("SELECT COUNT(*) FROM users WHERE status = 'pending'");
+        $pendingUsersCount = $stmt_pending_u->fetchColumn();
+    }
 }
 
 // 1. שליפת קטגוריות לסרגל הניווט
@@ -61,6 +72,10 @@ $sections = [
         .navbar { display: flex; justify-content: space-between; align-items: center; padding: 15px 25px; }
         .main-search { width: 100%; padding: 12px 20px; border-radius: 50px; background: rgba(255,255,255,0.05); border: 1px solid var(--accent); color: white; outline: none; transition: 0.3s; box-sizing: border-box; }
 
+        /* סגנון לפעמון ההתראות */
+        .notif-bell { position: relative; text-decoration: none; font-size: 1.4rem; margin-left: 10px; cursor: pointer; }
+        .bell-badge { position: absolute; top: -5px; right: -5px; background: var(--danger); color: white; font-size: 0.7rem; min-width: 18px; height: 18px; border-radius: 50%; display: flex; align-items: center; justify-content: center; border: 2px solid var(--bg); font-weight: bold; }
+
         .cat-bar { display: flex; gap: 12px; padding: 15px 25px; overflow-x: auto; scrollbar-width: none; }
         .cat-link { white-space: nowrap; padding: 8px 18px; background: var(--card-bg); border-radius: 50px; color: white; text-decoration: none; font-size: 0.9rem; border: 1px solid rgba(255,255,255,0.1); transition: 0.3s; }
         .cat-link:hover { background: var(--accent); color: var(--bg); }
@@ -100,6 +115,14 @@ $sections = [
         <div style="font-size: 1.6rem; font-weight: bold; color: var(--accent);">RecipeMaster 👨‍🍳</div>
         <div style="display: flex; gap: 15px; align-items: center;">
             <?php if($isLoggedIn): ?>
+                
+                <a href="notifications.php" class="notif-bell">
+                    🔔
+                    <?php if($unreadNotifications > 0): ?>
+                        <span class="bell-badge"><?php echo $unreadNotifications; ?></span>
+                    <?php endif; ?>
+                </a>
+
                 <div style="display: flex; align-items: center; gap: 10px; background: rgba(255,255,255,0.05); padding: 5px 15px; border-radius: 50px; border: 1px solid rgba(0, 242, 254, 0.3);">
                     <img src="<?php echo htmlspecialchars($_SESSION['profile_img'] ?? 'user-default.png'); ?>" class="user-avatar-small">
                     <span style="font-weight: bold; font-size: 0.85rem;"><?php echo htmlspecialchars($_SESSION['username']); ?></span>
@@ -214,7 +237,6 @@ function filterAllSections() {
         let title = card.getAttribute('data-title');
         let author = card.getAttribute('data-author');
         
-        // בדיקה אם הקלט קיים בשם המתכון או בשם היוצר
         if (title.includes(input) || author.includes(input)) {
             card.style.display = "flex";
         } else {
@@ -222,7 +244,6 @@ function filterAllSections() {
         }
     });
     
-    // הסתרת כפתורי "ראה עוד" בזמן חיפוש
     document.querySelectorAll('.toggle-btn').forEach(btn => btn.style.display = (input === "") ? "block" : "none");
 }
 </script>
