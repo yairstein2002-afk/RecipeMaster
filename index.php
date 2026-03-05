@@ -18,48 +18,71 @@ $adminMessagesCount = 0; // מונה פניות חדשות למנהל
 $unreadChatCount = 0;   // מונה הודעות קהילה חדשות
 
 // --- עדכון גולשים מחוברים ---
-if ($isLoggedIn) {
-    // עדכון פעילות אחרונה של המשתמש
-    $pdo->prepare("UPDATE users SET last_activity = NOW() WHERE id = ?")->execute([$userId]);
-}
-
-// שליפת כמות המחוברים ב-5 הדקות האחרונות
-$stmt_online = $pdo->query("SELECT COUNT(*) FROM users WHERE last_activity > NOW() - INTERVAL 5 MINUTE");
-$onlineUsersCount = $stmt_online->fetchColumn();
 
 if ($isLoggedIn) {
-    // שליפת מונה ההתראות האישיות (הפעמון)
+    // 1. עדכון פעילות אחרונה וסנכרון סטטוס/חסימה מה-DB
+    $stmt_user = $pdo->prepare("SELECT status, `role`, is_blocked FROM users WHERE id = ?");
+    $stmt_user->execute([$userId]);
+    $dbUser = $stmt_user->fetch();
+
+    if ($dbUser) {
+        // עדכון משתני עזר והסשן
+        $userStatus = $dbUser['status'];
+        $userRole = $dbUser['role'];
+        $_SESSION['status'] = $userStatus;
+        $_SESSION['role'] = $userRole;
+
+        // בדיקה אם המשתמש חסום
+        $isBlocked = ($dbUser['is_blocked'] == 1 || $userStatus === 'banned');
+
+        // אם בחרת באופציה א' (גירוש):
+        /*
+        if ($isBlocked) {
+            session_destroy();
+            header("Location: login.php?error=is_blocked");
+            exit;
+        }
+        */
+
+        // עדכון זמן פעילות ב-DB
+        $pdo->prepare("UPDATE users SET last_activity = NOW() WHERE id = ?")->execute([$userId]);
+    }
+
+    // 2. שליפת מונים והתראות (רק למשתמש מחובר)
+    
+    // מונה פעמון (notifications)
     $stmt_notif = $pdo->prepare("SELECT COUNT(*) FROM notifications WHERE user_id = ? AND is_read = 0");
     $stmt_notif->execute([$userId]);
     $unreadNotifications = $stmt_notif->fetchColumn();
 
-    // ספירת הודעות קהילה חדשות מאז הביקור האחרון
+    // מונה הודעות קהילה (chat)
     $stmt_chat_count = $pdo->prepare("SELECT COUNT(*) FROM messages WHERE type = 'community' AND created_at > (SELECT last_chat_read FROM users WHERE id = ?)");
     $stmt_chat_count->execute([$userId]);
     $unreadChatCount = $stmt_chat_count->fetchColumn();
 
+    // 3. לוגיקה למנהלים בלבד
     if ($userRole === 'admin') {
         // ספירת מתכונים לאישור
-        $stmt_pending_r = $pdo->query("SELECT COUNT(*) FROM recipes WHERE is_approved = 0");
-        $pendingRecipesCount = $stmt_pending_r->fetchColumn();
+        $pendingRecipesCount = $pdo->query("SELECT COUNT(*) FROM recipes WHERE is_approved = 0")->fetchColumn();
 
-        // ספירת משתמשים הממתינים לאישור
-        $stmt_pending_u = $pdo->query("SELECT COUNT(*) FROM users WHERE status = 'pending'");
-        $pendingUsersCount = $stmt_pending_u->fetchColumn();
+        // ספירת משתמשים להמתנה
+        $pendingUsersCount = $pdo->query("SELECT COUNT(*) FROM users WHERE status = 'pending'")->fetchColumn();
 
-        // ספירת פניות שטרם נקראו ע"י המנהל
+        // ספירת פניות למנהל
         $stmt_admin_chats = $pdo->prepare("
             SELECT COUNT(DISTINCT m.user_id) 
             FROM messages m 
             JOIN users u ON m.user_id = u.id 
-            WHERE m.type = 'admin' 
-            AND u.role != 'admin' 
+            WHERE m.type = 'admin' AND u.role != 'admin' 
             AND m.created_at > (SELECT last_admin_read FROM users WHERE id = ?)
         ");
         $stmt_admin_chats->execute([$userId]);
         $adminMessagesCount = $stmt_admin_chats->fetchColumn();
     }
 }
+
+// שליפת כמות המחוברים הכללית (לכולם - גם אורחים רואים)
+$onlineUsersCount = $pdo->query("SELECT COUNT(*) FROM users WHERE last_activity > NOW() - INTERVAL 5 MINUTE")->fetchColumn();
 
 // 1. שליפת קטגוריות לסרגל הניווט
 $categories = $pdo->query("SELECT * FROM categories ORDER BY id ASC")->fetchAll();
@@ -156,9 +179,24 @@ $sections = [
     </style>
 </head>
 <body>
+<?php if (isset($_GET['error']) && $_GET['error'] === 'recipe_not_found'): ?>
+    <div style="background: rgba(231, 76, 60, 0.1); color: #e74c3c; padding: 15px; border-radius: 12px; text-align: center; margin: 20px auto; max-width: 600px; border: 1px solid #e74c3c;">
+        🔍 <b>אופס!</b> המתכון שחיפשת לא נמצא או שהוסר מהאתר.
+    </div>
+<?php endif; ?>
+<?php 
+// בדיקה אם המשתמש חסום (לפי סטטוס banned או לפי עמודת ה-is_blocked)
+$isBlocked = ($userStatus === 'banned' || (isset($dbUser['is_blocked']) && $dbUser['is_blocked'] == 1));
+?>
 
-<?php if($isLoggedIn && $userStatus === 'pending'): ?>
-    <div class="status-banner">⏳ הפרופיל שלך ממתין לאישור מנהל. זמנית לא ניתן להעלות תוכן או להגיב.</div>
+<?php if($isLoggedIn && $isBlocked): ?>
+    <div class="status-banner" style="background: rgba(255, 71, 87, 0.2); border: 1px solid var(--danger); color: var(--danger);">
+        🚫 <b>חשבון חסום:</b> הפרופיל שלך הושעה על ידי הנהלת האתר. לא ניתן להעלות תוכן או להגיב.
+    </div>
+<?php elseif($isLoggedIn && $userStatus === 'pending'): ?>
+    <div class="status-banner">
+        ⏳ <b>בהמתנה:</b> הפרופיל שלך ממתין לאישור מנהל. זמנית לא ניתן להעלות תוכן או להגיב.
+    </div>
 <?php endif; ?>
 
 <div class="header-container">
