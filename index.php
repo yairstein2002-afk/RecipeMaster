@@ -4,7 +4,8 @@ require_once 'db.php';
 
 $isLoggedIn = isset($_SESSION['user_id']);
 $userRole = $_SESSION['role'] ?? 'guest';
-$userId = $_SESSION['user_id'] ?? null; // הוספנו את ה-ID של המשתמש המחובר
+$userId = $_SESSION['user_id'] ?? null; 
+$username = $_SESSION['username'] ?? 'אורח';
 
 // לוגיקה: מנהל מאושר תמיד, משתמשים לפי סשן
 $userStatus = ($userRole === 'admin') ? 'approved' : ($_SESSION['status'] ?? 'pending');
@@ -12,13 +13,30 @@ $userStatus = ($userRole === 'admin') ? 'approved' : ($_SESSION['status'] ?? 'pe
 // --- לוגיקת ספירת התראות למנהל וספירת פעמון אישי ---
 $pendingRecipesCount = 0;
 $pendingUsersCount = 0;
-$unreadNotifications = 0; // מונה חדש להתראות אישיות
+$unreadNotifications = 0; 
+$adminMessagesCount = 0; // מונה פניות חדשות למנהל
+$unreadChatCount = 0;   // מונה הודעות קהילה חדשות
+
+// --- עדכון גולשים מחוברים ---
+if ($isLoggedIn) {
+    // עדכון פעילות אחרונה של המשתמש
+    $pdo->prepare("UPDATE users SET last_activity = NOW() WHERE id = ?")->execute([$userId]);
+}
+
+// שליפת כמות המחוברים ב-5 הדקות האחרונות
+$stmt_online = $pdo->query("SELECT COUNT(*) FROM users WHERE last_activity > NOW() - INTERVAL 5 MINUTE");
+$onlineUsersCount = $stmt_online->fetchColumn();
 
 if ($isLoggedIn) {
     // שליפת מונה ההתראות האישיות (הפעמון)
     $stmt_notif = $pdo->prepare("SELECT COUNT(*) FROM notifications WHERE user_id = ? AND is_read = 0");
     $stmt_notif->execute([$userId]);
     $unreadNotifications = $stmt_notif->fetchColumn();
+
+    // ספירת הודעות קהילה חדשות מאז הביקור האחרון
+    $stmt_chat_count = $pdo->prepare("SELECT COUNT(*) FROM messages WHERE type = 'community' AND created_at > (SELECT last_chat_read FROM users WHERE id = ?)");
+    $stmt_chat_count->execute([$userId]);
+    $unreadChatCount = $stmt_chat_count->fetchColumn();
 
     if ($userRole === 'admin') {
         // ספירת מתכונים לאישור
@@ -28,6 +46,18 @@ if ($isLoggedIn) {
         // ספירת משתמשים הממתינים לאישור
         $stmt_pending_u = $pdo->query("SELECT COUNT(*) FROM users WHERE status = 'pending'");
         $pendingUsersCount = $stmt_pending_u->fetchColumn();
+
+        // ספירת פניות שטרם נקראו ע"י המנהל
+        $stmt_admin_chats = $pdo->prepare("
+            SELECT COUNT(DISTINCT m.user_id) 
+            FROM messages m 
+            JOIN users u ON m.user_id = u.id 
+            WHERE m.type = 'admin' 
+            AND u.role != 'admin' 
+            AND m.created_at > (SELECT last_admin_read FROM users WHERE id = ?)
+        ");
+        $stmt_admin_chats->execute([$userId]);
+        $adminMessagesCount = $stmt_admin_chats->fetchColumn();
     }
 }
 
@@ -51,7 +81,7 @@ function getRecipesByOrder($pdo, $orderBy) {
 
 // 2. שליפת הנתונים ל-3 האזורים
 $sections = [
-    ['id' => 'liked', 'title' => '🔥 הכי אהובים (לייקים)', 'data' => getRecipesByOrder($pdo, 'likes_count')],
+    ['id' => 'liked', 'title' => '🔥 הכי אהובים', 'data' => getRecipesByOrder($pdo, 'likes_count')],
     ['id' => 'views', 'title' => '📈 הכי נצפים', 'data' => getRecipesByOrder($pdo, 'views')],
     ['id' => 'comments', 'title' => '💬 הכי מדוברים', 'data' => getRecipesByOrder($pdo, 'comments_count')]
 ];
@@ -63,7 +93,7 @@ $sections = [
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>RecipeMaster | דף הבית</title>
     <style>
-        :root { --accent: #00f2fe; --bg: #0f172a; --card-bg: rgba(255,255,255,0.05); --danger: #ff4757; --warning: #ffa502; }
+        :root { --accent: #00f2fe; --bg: #0f172a; --card-bg: rgba(255,255,255,0.05); --danger: #ff4757; --warning: #ffa502; --success: #2ed573; }
         body { background: var(--bg); color: white; font-family: 'Segoe UI', sans-serif; margin: 0; padding-bottom: 100px; scroll-behavior: smooth; }
         
         .status-banner { background: var(--warning); color: #0f172a; padding: 10px; text-align: center; font-weight: bold; font-size: 0.9rem; border-bottom: 2px solid rgba(0,0,0,0.1); }
@@ -72,9 +102,13 @@ $sections = [
         .navbar { display: flex; justify-content: space-between; align-items: center; padding: 15px 25px; }
         .main-search { width: 100%; padding: 12px 20px; border-radius: 50px; background: rgba(255,255,255,0.05); border: 1px solid var(--accent); color: white; outline: none; transition: 0.3s; box-sizing: border-box; }
 
-        /* סגנון לפעמון ההתראות */
+        .online-counter { font-size: 0.75rem; color: var(--success); display: flex; align-items: center; gap: 6px; background: rgba(46, 213, 115, 0.1); padding: 5px 12px; border-radius: 20px; border: 1px solid var(--success); margin-left: 15px; }
+        .pulse-dot { width: 8px; height: 8px; background: var(--success); border-radius: 50%; animation: pulse-glow 1.5s infinite; }
+
         .notif-bell { position: relative; text-decoration: none; font-size: 1.4rem; margin-left: 10px; cursor: pointer; }
         .bell-badge { position: absolute; top: -5px; right: -5px; background: var(--danger); color: white; font-size: 0.7rem; min-width: 18px; height: 18px; border-radius: 50%; display: flex; align-items: center; justify-content: center; border: 2px solid var(--bg); font-weight: bold; }
+
+        .menu-notif { position: absolute; top: -8px; right: -5px; background: var(--danger); color: white; font-size: 0.65rem; min-width: 16px; height: 16px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-weight: bold; border: 1px solid var(--bg); }
 
         .cat-bar { display: flex; gap: 12px; padding: 15px 25px; overflow-x: auto; scrollbar-width: none; }
         .cat-link { white-space: nowrap; padding: 8px 18px; background: var(--card-bg); border-radius: 50px; color: white; text-decoration: none; font-size: 0.9rem; border: 1px solid rgba(255,255,255,0.1); transition: 0.3s; }
@@ -84,24 +118,41 @@ $sections = [
         .notification-badge { background: var(--danger); color: white; font-size: 0.75rem; padding: 2px 8px; border-radius: 50px; margin-right: 6px; animation: pulse 2s infinite; font-weight: bold; }
         
         .recipe-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 25px; padding: 20px; }
-        .recipe-card { background: var(--card-bg); border-radius: 20px; overflow: hidden; border: 1px solid rgba(255,255,255,0.05); transition: 0.3s; text-decoration: none; color: white; position: relative; display: flex; flex-direction: column; }
-        .recipe-card:hover { transform: translateY(-5px); border-color: var(--accent); }
-        .img-wrapper { width: 100%; aspect-ratio: 16/10; overflow: hidden; position: relative; }
-        .recipe-img { width: 100%; height: 100%; object-fit: cover; }
         
-        .stat-badge { position: absolute; top: 10px; right: 10px; background: rgba(0,0,0,0.7); color: white; padding: 6px 12px; border-radius: 12px; font-size: 0.75rem; backdrop-filter: blur(5px); border: 1px solid rgba(255,255,255,0.1); display: flex; gap: 10px; align-items: center; }
+        /* הפיכת כל הכרטיס ללחיץ */
+        .recipe-card { 
+            background: var(--card-bg); 
+            border-radius: 20px; 
+            overflow: hidden; 
+            border: 1px solid rgba(255,255,255,0.05); 
+            transition: 0.3s; 
+            text-decoration: none; 
+            color: inherit; 
+            display: flex; 
+            flex-direction: column; 
+            position: relative;
+        }
+        .recipe-card:hover { transform: translateY(-5px); border-color: var(--accent); }
+        
+        .img-wrapper { width: 100%; aspect-ratio: 16/10; overflow: hidden; position: relative; }
+        .recipe-img { width: 100%; height: 100%; object-fit: cover; transition: 0.5s; }
+        .recipe-card:hover .recipe-img { transform: scale(1.05); }
+        
+        .stat-badge { position: absolute; top: 10px; right: 10px; background: rgba(0,0,0,0.7); color: white; padding: 6px 12px; border-radius: 12px; font-size: 0.75rem; backdrop-filter: blur(5px); border: 1px solid rgba(255,255,255,0.1); display: flex; gap: 10px; align-items: center; z-index: 2; }
 
-        .notebook-btn { position: fixed; bottom: 30px; right: 30px; background: linear-gradient(45deg, #4facfe, #00f2fe); color: #0f172a; padding: 15px 30px; border-radius: 50px; text-decoration: none; font-weight: bold; z-index: 999; box-shadow: 0 10px 20px rgba(0,0,0,0.3); transition: 0.3s; }
-        .shopping-btn { position: fixed; bottom: 30px; left: 30px; background: white; color: #0f172a; padding: 15px 30px; border-radius: 50px; text-decoration: none; font-weight: bold; z-index: 999; box-shadow: 0 10px 20px rgba(0,0,0,0.3); transition: 0.3s; display: flex; align-items: center; gap: 8px; }
+        /* כפתורי פעולה צפים */
+        .notebook-btn { position: fixed; bottom: 30px; right: 30px; background: linear-gradient(45deg, #4facfe, #00f2fe); color: #0f172a; padding: 15px 25px; border-radius: 50px; text-decoration: none; font-weight: bold; z-index: 999; box-shadow: 0 10px 20px rgba(0,0,0,0.3); transition: 0.3s; display: flex; align-items: center; gap: 8px; }
+        .shopping-btn { position: fixed; bottom: 30px; left: 30px; background: white; color: #0f172a; padding: 15px 25px; border-radius: 50px; text-decoration: none; font-weight: bold; z-index: 999; box-shadow: 0 10px 20px rgba(0,0,0,0.3); transition: 0.3s; display: flex; align-items: center; gap: 8px; }
+        .notebook-btn:hover, .shopping-btn:hover { transform: scale(1.05); }
 
         .user-avatar-small { width: 28px; height: 28px; border-radius: 50%; object-fit: cover; border: 1px solid var(--accent); }
         .author-link { color: var(--accent); text-decoration: none; font-weight: bold; transition: 0.2s; display: flex; align-items: center; gap: 8px; }
-        .author-link:hover { opacity: 0.8; text-decoration: underline; }
+        .author-link:hover { text-decoration: underline; }
 
         .hidden-item { display: none; }
         .toggle-btn { display: block; width: 220px; margin: 10px auto 40px; padding: 12px; background: transparent; border: 1px solid var(--accent); color: var(--accent); border-radius: 50px; cursor: pointer; font-weight: bold; transition: 0.3s; }
 
-        @keyframes pulse { 0% { transform: scale(1); } 50% { transform: scale(1.1); } 100% { transform: scale(1); } }
+        @keyframes pulse-glow { 0% { opacity: 1; } 50% { opacity: 0.4; } 100% { opacity: 1; } }
     </style>
 </head>
 <body>
@@ -112,10 +163,23 @@ $sections = [
 
 <div class="header-container">
     <nav class="navbar">
-        <div style="font-size: 1.6rem; font-weight: bold; color: var(--accent);">RecipeMaster 👨‍🍳</div>
+        <div style="display: flex; align-items: center;">
+            <div style="font-size: 1.6rem; font-weight: bold; color: var(--accent);">RecipeMaster 👨‍🍳</div>
+            <div class="online-counter">
+                <span class="pulse-dot"></span>
+                מחוברים: <b><?php echo $onlineUsersCount; ?></b>
+            </div>
+        </div>
+
         <div style="display: flex; gap: 15px; align-items: center;">
+            <a href="community.php" style="position: relative; text-decoration: none; color: white; font-size: 0.9rem; font-weight: bold; background: rgba(255,255,255,0.1); padding: 8px 15px; border-radius: 50px;">
+                קהילה 👥
+                <?php if($unreadChatCount > 0): ?>
+                    <span class="menu-notif"><?php echo $unreadChatCount; ?></span>
+                <?php endif; ?>
+            </a>
+
             <?php if($isLoggedIn): ?>
-                
                 <a href="notifications.php" class="notif-bell">
                     🔔
                     <?php if($unreadNotifications > 0): ?>
@@ -124,8 +188,8 @@ $sections = [
                 </a>
 
                 <div style="display: flex; align-items: center; gap: 10px; background: rgba(255,255,255,0.05); padding: 5px 15px; border-radius: 50px; border: 1px solid rgba(0, 242, 254, 0.3);">
-                    <img src="<?php echo htmlspecialchars($_SESSION['profile_img'] ?? 'user-default.png'); ?>" class="user-avatar-small">
-                    <span style="font-weight: bold; font-size: 0.85rem;"><?php echo htmlspecialchars($_SESSION['username']); ?></span>
+                    <img src="<?php echo htmlspecialchars($_SESSION['profile_img'] ?? 'user-default.png'); ?>" class="user-avatar-small" loading="lazy">
+                    <span style="font-weight: bold; font-size: 0.85rem;"><?php echo htmlspecialchars($username); ?></span>
                 </div>
                 
                 <?php if($userStatus === 'approved'): ?>
@@ -141,7 +205,7 @@ $sections = [
     </nav>
 
     <div style="padding: 0 25px 15px;">
-        <input type="text" id="mainSearch" class="main-search" placeholder="🔍 חפש מתכון או בשלן (למשל: עוגה, משה...)" onkeyup="filterAllSections()">
+        <input type="text" id="mainSearch" class="main-search" placeholder="🔍 חפש מתכון או בשלן..." onkeyup="filterAllSections()">
     </div>
 
     <div class="cat-bar">
@@ -177,34 +241,30 @@ $sections = [
         <div style="padding: 25px 25px 0; font-size: 1.4rem; font-weight: bold; color: var(--accent);"><?php echo $sec['title']; ?></div>
         <div class="recipe-grid" id="grid-<?php echo $sec['id']; ?>">
             <?php foreach ($sec['data'] as $index => $r): ?>
-            <div class="recipe-card <?php echo ($index >= 4) ? 'hidden-item' : ''; ?>" 
+            <a href="view_recipe.php?id=<?php echo $r['id']; ?>" class="recipe-card <?php echo ($index >= 4) ? 'hidden-item' : ''; ?>" 
                  data-title="<?php echo htmlspecialchars(mb_strtolower($r['title'], 'UTF-8')); ?>"
                  data-author="<?php echo htmlspecialchars(mb_strtolower($r['username'], 'UTF-8')); ?>">
                 
-                <a href="view_recipe.php?id=<?php echo $r['id']; ?>" style="text-decoration: none; color: inherit;">
-                    <div class="img-wrapper">
-                        <img src="<?php echo htmlspecialchars($r['image_url'] ?: 'default.jpg'); ?>" class="recipe-img">
-                        <div class="stat-badge">
-                            <span>👁️ <?php echo number_format($r['views']); ?></span>
-                            <span style="opacity: 0.5;">|</span>
-                            <span>❤️ <?php echo $r['likes_count']; ?></span>
-                        </div>
+                <div class="img-wrapper">
+                    <img src="<?php echo htmlspecialchars($r['image_url'] ?: 'default.jpg'); ?>" class="recipe-img" loading="lazy">
+                    <div class="stat-badge">
+                        <span>👁️ <?php echo number_format($r['views']); ?></span>
+                        <span style="opacity: 0.5;">|</span>
+                        <span>❤️ <?php echo $r['likes_count']; ?></span>
                     </div>
-                </a>
+                </div>
                 
                 <div style="padding: 15px;">
-                    <a href="view_recipe.php?id=<?php echo $r['id']; ?>" style="text-decoration: none; color: inherit;">
-                        <h3 style="margin:0; font-size: 1.1rem;"><?php echo htmlspecialchars($r['title']); ?></h3>
-                    </a>
+                    <h3 style="margin:0; font-size: 1.1rem;"><?php echo htmlspecialchars($r['title']); ?></h3>
                     <div style="display: flex; align-items: center; justify-content: space-between; margin-top: 10px;">
-                        <a href="profile.php?id=<?php echo $r['user_id']; ?>" class="author-link" title="לפרופיל של <?php echo htmlspecialchars($r['username']); ?>">
-                            <img src="<?php echo htmlspecialchars($r['profile_img'] ?: 'user-default.png'); ?>" class="user-avatar-small">
+                        <div class="author-link" onclick="event.preventDefault(); window.location.href='profile.php?id=<?php echo $r['user_id']; ?>';">
+                            <img src="<?php echo htmlspecialchars($r['profile_img'] ?: 'user-default.png'); ?>" class="user-avatar-small" loading="lazy">
                             <span><?php echo htmlspecialchars($r['username']); ?></span>
-                        </a>
+                        </div>
                         <span style="font-size: 0.8rem; opacity: 0.5;"><?php echo $r['icon']; ?></span>
                     </div>
                 </div>
-            </div>
+            </a>
             <?php endforeach; ?>
         </div>
         <?php if (count($sec['data']) > 4): ?>
@@ -214,11 +274,11 @@ $sections = [
     <?php endforeach; ?>
 </main>
 
-<?php if($isLoggedIn): ?>
-    <a href="my_recipes.php" class="notebook-btn">המחברת שלי 📖</a>
-<?php endif; ?>
-
 <a href="shopping_list.php" class="shopping-btn">🛒 רשימת קניות</a>
+
+<?php if($isLoggedIn): ?>
+    <a href="my_recipes.php" class="notebook-btn">📓 המחברת שלי</a>
+<?php endif; ?>
 
 <script>
 function toggleSection(secId, btn) {
@@ -232,18 +292,11 @@ function toggleSection(secId, btn) {
 function filterAllSections() {
     let input = document.getElementById('mainSearch').value.toLowerCase();
     let cards = document.querySelectorAll('.recipe-card');
-    
     cards.forEach(card => {
         let title = card.getAttribute('data-title');
         let author = card.getAttribute('data-author');
-        
-        if (title.includes(input) || author.includes(input)) {
-            card.style.display = "flex";
-        } else {
-            card.style.display = "none";
-        }
+        card.style.display = (title.includes(input) || author.includes(input)) ? "flex" : "none";
     });
-    
     document.querySelectorAll('.toggle-btn').forEach(btn => btn.style.display = (input === "") ? "block" : "none");
 }
 </script>
