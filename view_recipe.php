@@ -8,6 +8,8 @@ $userRole = $_SESSION['role'] ?? 'guest';
 
 if (!$recipeId) { header("Location: index.php"); exit; }
 
+
+
 // --- 1. סנכרון סטטוס מול ה-DB בזמן אמת ---
 if ($userId) {
     $stmt_check = $pdo->prepare("SELECT status, role FROM users WHERE id = ?");
@@ -78,6 +80,28 @@ if (isset($_POST['toggle_like']) && $userId && $userStatus === 'approved') {
 // --- 6. תגובות (ניתוב התראות חכם) ---
 if (isset($_POST['submit_comment']) && $userId && !empty(trim($_POST['comment_text']))) {
     if ($userStatus !== 'approved') die("גישה חסומה.");
+    
+    // בדיקה ב-PHP לפני ה-INSERT: האם המשתמש הגיב בדקה האחרונה?
+$stmt_check_spam = $pdo->prepare("
+    SELECT COUNT(*) FROM comments 
+    WHERE user_id = ? AND created_at > NOW() - INTERVAL 1 MINUTE
+");
+$stmt_check_spam->execute([$userId]);
+
+if ($stmt_check_spam->fetchColumn() > 0) {
+    die("נא להמתין דקה בין תגובה לתגובה. ! 😉");
+}
+
+// בדיקה נוספת: האם למשתמש הזה כבר יש יותר מ-5 תגובות במתכון הזה?
+$stmt_user_limit = $pdo->prepare("
+    SELECT COUNT(*) FROM comments WHERE user_id = ? AND recipe_id = ?
+");
+$stmt_user_limit->execute([$userId, $recipeId]);
+
+if ($stmt_user_limit->fetchColumn() >= 5) {
+    die("כתבת כבר 5 תגובות למתכון זה. בוא ניתן הזדמנות לאחרים!");
+}
+
     $parentId = !empty($_POST['parent_id']) ? (int)$_POST['parent_id'] : null;
     $commentText = $_POST['comment_text'];
     
@@ -199,6 +223,25 @@ function renderComments($parentId, $commentsByParent, $userId, $userStatus, $isR
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title><?php echo htmlspecialchars($recipe['title']); ?> | RecipeMaster</title>
 <style>
+    .load-more-btn {
+    width: 100%;
+    padding: 12px;
+    background: rgba(255, 255, 255, 0.05);
+    border: 1px solid var(--accent);
+    color: var(--accent);
+    border-radius: 50px;
+    cursor: pointer;
+    font-weight: bold;
+    margin-top: 20px;
+    transition: 0.3s;
+    backdrop-filter: blur(10px);
+}
+
+.load-more-btn:hover {
+    background: var(--accent);
+    color: var(--bg);
+    box-shadow: 0 0 20px rgba(0, 242, 254, 0.4);
+}
     :root { 
         --accent: #00f2fe; 
         --bg: #0f172a; 
