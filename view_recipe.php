@@ -89,7 +89,9 @@ $stmt_check_spam = $pdo->prepare("
 $stmt_check_spam->execute([$userId]);
 
 if ($stmt_check_spam->fetchColumn() > 0) {
-    die("נא להמתין דקה בין תגובה לתגובה. ! 😉");
+    // במקום לעצור את כל האתר, אנחנו מפנים חזרה עם פרמטר שגיאה ב-URL
+    header("Location: view_recipe.php?id=$recipeId&error=wait#comments");
+    exit;
 }
 
 // בדיקה נוספת: האם למשתמש הזה כבר יש יותר מ-5 תגובות במתכון הזה?
@@ -99,7 +101,9 @@ $stmt_user_limit = $pdo->prepare("
 $stmt_user_limit->execute([$userId, $recipeId]);
 
 if ($stmt_user_limit->fetchColumn() >= 5) {
-    die("כתבת כבר 5 תגובות למתכון זה. בוא ניתן הזדמנות לאחרים!");
+    // שליחה חזרה לדף המתכון עם פרמטר שגיאה ועוגן לאזור התגובות
+    header("Location: view_recipe.php?id=$recipeId&error=limit_reached#comments");
+    exit;
 }
 
     $parentId = !empty($_POST['parent_id']) ? (int)$_POST['parent_id'] : null;
@@ -136,8 +140,11 @@ $recipe_stmt = $pdo->prepare("SELECT r.*, u.username, u.profile_img,
 $recipe_stmt->execute([$userId, $recipeId]);
 $recipe = $recipe_stmt->fetch();
 
-if (!$recipe) die("המתכון לא נמצא.");
-
+if (!$recipe) {
+    // הפניה לדף הבית עם פרמטר שגיאה ברור
+    header("Location: index.php?error=recipe_not_found");
+    exit;
+}
 $ingredients = $pdo->prepare("SELECT * FROM ingredients WHERE recipe_id = ?");
 $ingredients->execute([$recipeId]); $ingredients = $ingredients->fetchAll();
 
@@ -382,7 +389,18 @@ function renderComments($parentId, $commentsByParent, $userId, $userStatus, $isR
         </div>
     </div>
 
+    <?php if (isset($_GET['error']) && $_GET['error'] === 'limit_reached'): ?>
+    <div style="background: rgba(255, 159, 64, 0.1); border: 1px solid #ff9f40; color: #ff9f40; padding: 15px; border-radius: 12px; margin-bottom: 20px; text-align: center; font-weight: bold;">
+        🚫 מכסה מלאה: כתבת כבר 5 תגובות למתכון זה. בוא ניתן הזדמנות לאחרים!
+    </div>
+<?php endif; ?>
+
     <div class="comments-area" id="comments" style="margin-top: 40px;">
+        <?php if (isset($_GET['error']) && $_GET['error'] === 'wait'): ?>
+    <div class="error-box" style="margin-bottom: 15px;">
+        ⏳ <b>סבלנות!</b> נא להמתין דקה בין תגובה לתגובה. ! 😉
+    </div>
+<?php endif; ?>
         <h3>💬 תגובות</h3>
         <?php if($userId && $userStatus === 'approved'): ?>
             <form method="POST" style="margin-bottom: 25px;">
