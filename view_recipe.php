@@ -81,52 +81,66 @@ if (isset($_POST['toggle_like']) && $userId && $userStatus === 'approved') {
 if (isset($_POST['submit_comment']) && $userId && !empty(trim($_POST['comment_text']))) {
     if ($userStatus !== 'approved') die("גישה חסומה.");
     
-    // בדיקה ב-PHP לפני ה-INSERT: האם המשתמש הגיב בדקה האחרונה?
-$stmt_check_spam = $pdo->prepare("
-    SELECT COUNT(*) FROM comments 
-    WHERE user_id = ? AND created_at > NOW() - INTERVAL 1 MINUTE
-");
-$stmt_check_spam->execute([$userId]);
+    // 1. בדיקת ספאם (דקה בין תגובות)
+    $stmt_check_spam = $pdo->prepare("
+        SELECT COUNT(*) FROM comments 
+        WHERE user_id = ? AND created_at > NOW() - INTERVAL 1 MINUTE
+    ");
+    $stmt_check_spam->execute([$userId]);
 
-if ($stmt_check_spam->fetchColumn() > 0) {
-    // במקום לעצור את כל האתר, אנחנו מפנים חזרה עם פרמטר שגיאה ב-URL
-    header("Location: view_recipe.php?id=$recipeId&error=wait#comments");
-    exit;
-}
+    if ($stmt_check_spam->fetchColumn() > 0) {
+        header("Location: view_recipe.php?id=$recipeId&error=wait#comments");
+        exit;
+    }
 
-// בדיקה נוספת: האם למשתמש הזה כבר יש יותר מ-5 תגובות במתכון הזה?
-$stmt_user_limit = $pdo->prepare("
-    SELECT COUNT(*) FROM comments WHERE user_id = ? AND recipe_id = ?
-");
-$stmt_user_limit->execute([$userId, $recipeId]);
+    // 2. בדיקת מכסה אישית (5 תגובות למשתמש)
+    $stmt_user_limit = $pdo->prepare("
+        SELECT COUNT(*) FROM comments WHERE user_id = ? AND recipe_id = ?
+    ");
+    $stmt_user_limit->execute([$userId, $recipeId]);
 
-if ($stmt_user_limit->fetchColumn() >= 5) {
-    // שליחה חזרה לדף המתכון עם פרמטר שגיאה ועוגן לאזור התגובות
-    header("Location: view_recipe.php?id=$recipeId&error=limit_reached#comments");
-    exit;
-}
+    if ($stmt_user_limit->fetchColumn() >= 5) {
+        header("Location: view_recipe.php?id=$recipeId&error=limit_reached#comments");
+        exit;
+    }
 
     $parentId = !empty($_POST['parent_id']) ? (int)$_POST['parent_id'] : null;
-    $commentText = $_POST['comment_text'];
-    
-    $stmt_comm = $pdo->prepare("INSERT INTO comments (recipe_id, user_id, comment_text, parent_id) VALUES (?, ?, ?, ?)");
-    $stmt_comm->execute([$recipeId, $userId, $commentText, $parentId]);
-    $lastCommentId = $pdo->lastInsertId(); 
+    $commentText = trim($_POST['comment_text']);
 
-    $targetUserId = null;
-    if ($parentId) {
-        $stmt_p = $pdo->prepare("SELECT user_id FROM comments WHERE id = ?");
-        $stmt_p->execute([$parentId]);
-        $targetUserId = $stmt_p->fetchColumn();
-    } else {
-        $targetUserId = $recipeOwnerId;
-    }
+    // --- 3. ניסיון הכנסה למסד הנתונים עם הגנת SQL ---
+    try {
+        $stmt_comm = $pdo->prepare("INSERT INTO comments (recipe_id, user_id, comment_text, parent_id) VALUES (?, ?, ?, ?)");
+        $stmt_comm->execute([$recipeId, $userId, $commentText, $parentId]);
+        $lastCommentId = $pdo->lastInsertId(); 
 
-    if ($targetUserId && $targetUserId != $userId) {
-        $pdo->prepare("INSERT INTO notifications (user_id, actor_id, recipe_id, comment_id, is_read) VALUES (?, ?, ?, ?, 0)")
-            ->execute([$targetUserId, $userId, $recipeId, $lastCommentId]);
+        // לוגיקת התראות (תבוצע רק אם ההכנסה הצליחה)
+        $targetUserId = null;
+        if ($parentId) {
+            $stmt_p = $pdo->prepare("SELECT user_id FROM comments WHERE id = ?");
+            $stmt_p->execute([$parentId]);
+            $targetUserId = $stmt_p->fetchColumn();
+        } else {
+            $targetUserId = $recipeOwnerId;
+        }
+
+        if ($targetUserId && $targetUserId != $userId) {
+            $pdo->prepare("INSERT INTO notifications (user_id, actor_id, recipe_id, comment_id, is_read) VALUES (?, ?, ?, ?, 0)")
+                ->execute([$targetUserId, $userId, $recipeId, $lastCommentId]);
+        }
+
+        header("Location: view_recipe.php?id=$recipeId#comments"); 
+        exit;
+
+    } catch (PDOException $e) {
+        // אם הטריגר ב-SQL חסם את הפעולה (קוד 45000)
+        if ($e->getCode() == '45000') {
+            header("Location: view_recipe.php?id=$recipeId&error=total_limit_reached#comments");
+            exit;
+        } else {
+            // שגיאת מסד נתונים אחרת
+            die("שגיאה במערכת: " . $e->getMessage());
+        }
     }
-    header("Location: view_recipe.php?id=$recipeId#comments"); exit;
 }
 
 // --- שליפת נתונים לתצוגה ---
@@ -389,6 +403,12 @@ function renderComments($parentId, $commentsByParent, $userId, $userStatus, $isR
         </div>
     </div>
 
+    <?php if (isset($_GET['error']) && $_GET['error'] === 'total_limit_reached'): ?>
+    <div style="background: rgba(255, 71, 87, 0.1); border: 1px solid var(--danger); color: var(--danger); padding: 15px; border-radius: 12px; margin-bottom: 20px; text-align: center; font-weight: bold;">
+        🔒 מצטערים, המתכון הזה הגיע למכסה המקסימלית של תגובות (500).
+    </div>
+<?php endif; ?>
+
     <?php if (isset($_GET['error']) && $_GET['error'] === 'limit_reached'): ?>
     <div style="background: rgba(255, 159, 64, 0.1); border: 1px solid #ff9f40; color: #ff9f40; padding: 15px; border-radius: 12px; margin-bottom: 20px; text-align: center; font-weight: bold;">
         🚫 מכסה מלאה: כתבת כבר 5 תגובות למתכון זה. בוא ניתן הזדמנות לאחרים!
@@ -446,3 +466,4 @@ document.addEventListener('DOMContentLoaded', () => {
 </script>
 </body>
 </html>
+
