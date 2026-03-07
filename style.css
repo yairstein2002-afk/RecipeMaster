@@ -121,3 +121,15 @@ a:hover {
 }
 .alert-success { background: rgba(46, 204, 113, 0.2); border: 1px solid #2ecc71; color: #2ecc71; }
 .alert-danger { background: rgba(231, 76, 60, 0.2); border: 1px solid #e74c3c; color: #ff7675; }
+/* הוסף את זה ל-style שלך למראה נקי יותר */
+.category-section {
+    background: white;
+    padding: 30px;
+    border-radius: 20px;
+    margin-bottom: 40px;
+    box-shadow: 0 5px 20px rgba(0,0,0,0.05);
+}
+.category-header {
+    color: #2d3436;
+    border-right: 8px solid #ff7e5f; /* כתום חם במקום ירוק */
+}
