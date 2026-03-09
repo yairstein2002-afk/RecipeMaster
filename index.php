@@ -60,10 +60,10 @@ if ($isLoggedIn) {
     $stmt_chat_count->execute([$userId]);
     $unreadChatCount = $stmt_chat_count->fetchColumn();
 
-    // 3. לוגיקה למנהלים בלבד
+// 3. לוגיקה למנהלים בלבד
     if ($userRole === 'admin') {
-        // ספירת מתכונים לאישור
-        $pendingRecipesCount = $pdo->query("SELECT COUNT(*) FROM recipes WHERE is_approved = 0")->fetchColumn();
+        // תיקון: ספירת מתכונים לאישור - רק כאלו שהם ציבוריים (כי פרטיים לא צריכים אישור)
+        $pendingRecipesCount = $pdo->query("SELECT COUNT(*) FROM recipes WHERE is_approved = 0 AND is_public = 1")->fetchColumn();
 
         // ספירת משתמשים להמתנה
         $pendingUsersCount = $pdo->query("SELECT COUNT(*) FROM users WHERE status = 'pending'")->fetchColumn();
