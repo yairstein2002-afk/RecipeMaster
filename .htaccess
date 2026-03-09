@@ -1,0 +1,14 @@
+# מניעת הצגת רשימת הקבצים בתיקייה (Index)
+Options -Indexes
+
+# חסימת הרצת קבצי PHP בתיקייה הזו (הגנה מפני האקרים)
+<FilesMatch "\.(php|php3|php4|php5|phtml|pl|py|jsp|asp|sh|cgi)$">
+    Order Allow,Deny
+    Deny from all
+</FilesMatch>
+
+# אישור גישה רק לקבצי תמונה ומדיה
+<FilesMatch "\.(jpg|jpeg|png|gif|webp|mp4|mov)$">
+    Order Deny,Allow
+    Allow from all
+</FilesMatch>
