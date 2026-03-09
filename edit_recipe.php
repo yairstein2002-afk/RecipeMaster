@@ -13,16 +13,22 @@ $userId = $_SESSION['user_id'];
 $userRole = $_SESSION['role'] ?? 'user';
 
 /**
- * מניעת בעיית סשן: בדיקת הסטטוס העדכני מה-DB
+ * שכבת הגנה: סנכרון סטטוס וחסימה בזמן אמת (סגירת קצה פתוח)
  */
-$stmt_check = $pdo->prepare("SELECT status FROM users WHERE id = ?");
+$stmt_check = $pdo->prepare("SELECT status, is_blocked, block_reason FROM users WHERE id = ?");
 $stmt_check->execute([$userId]);
-$currentStatus = $stmt_check->fetchColumn();
-$_SESSION['status'] = $currentStatus;
+$userLock = $stmt_check->fetch();
 
-$userStatus = ($userRole === 'admin') ? 'approved' : $currentStatus;
+// אם המשתמש נחסם - ננתק אותו מיד
+if (!$userLock || $userLock['is_blocked'] == 1 || $userLock['status'] === 'banned') {
+    $reason = urlencode($userLock['block_reason'] ?? 'הפרת תנאי השימוש');
+    session_destroy();
+    header("Location: login.php?error=is_blocked&reason=" . $reason);
+    exit;
+}
 
-// חסימת אבטחה: משתמש שלא אושר לא יכול לערוך תוכן
+$userStatus = ($userRole === 'admin') ? 'approved' : $userLock['status'];
+
 if ($userStatus !== 'approved') {
     header("Location: index.php?error=not_approved");
     exit;
@@ -39,55 +45,90 @@ $stmt->execute([$recipeId, $userId, $userRole]);
 $recipe = $stmt->fetch();
 
 if (!$recipe) { 
-    die("מתכון לא נמצא או שאין לך הרשאה לערוך אותו."); 
+    header("Location: my_recipes.php?error=not_found");
+    exit;
 }
 
 // שליפת מצרכים והוראות קיימים
-$ingredients = $pdo->prepare("SELECT * FROM ingredients WHERE recipe_id = ?");
-$ingredients->execute([$recipeId]);
-$ing_list = $ingredients->fetchAll();
+$ing_list = $pdo->prepare("SELECT * FROM ingredients WHERE recipe_id = ?");
+$ing_list->execute([$recipeId]);
+$ing_list = $ing_list->fetchAll();
 
-$instructions = $pdo->prepare("SELECT * FROM instructions WHERE recipe_id = ? ORDER BY id ASC");
-$instructions->execute([$recipeId]);
-$ins_list = $instructions->fetchAll();
+$ins_list = $pdo->prepare("SELECT * FROM instructions WHERE recipe_id = ? ORDER BY id ASC");
+$ins_list->execute([$recipeId]);
+$ins_list = $ins_list->fetchAll();
 
 $categories = $pdo->query("SELECT * FROM categories ORDER BY id ASC")->fetchAll();
 
 // 2. לוגיקת שמירה (POST)
 if ($_SERVER['REQUEST_METHOD'] == 'POST') {
-    $title = $_POST['title'];
+    $title = trim($_POST['title']);
     $categoryId = $_POST['category_id'];
-    $videoUrl = $_POST['video_url'];
+    $videoUrl = trim($_POST['video_url']);
     $isPublic = isset($_POST['is_public']) ? 1 : 0;
-    $imageUrl = $recipe['image_url']; 
+    $oldImageUrl = $recipe['image_url']; 
+    $imageUrl = $oldImageUrl;
+    $fileWasUploaded = false;
 
-    // בדיקה אם המשתמש בחר למחוק את התמונה הקיימת
+    // ניקוי מזהה יוטיוב (סגירת קצה פתוח: UX)
+    if (!empty($videoUrl)) {
+        preg_match('%(?:youtube(?:-nocookie)?\.com/(?:[^/]+/.+/|(?:v|e(?:mbed)?)/|.*[?&]v=)|youtu\.be/)([^"&?/ ]{11})%i', $videoUrl, $match);
+        $videoUrl = $match[1] ?? $videoUrl;
+    }
+
+    // פונקציית עזר לניקוי קבצים
+    function deletePhysicalFile($path) {
+        if ($path && $path !== 'default.jpg' && file_exists($path)) {
+            unlink($path);
+        }
+    }
+
+    // בדיקה אם המשתמש בחר למחוק את התמונה
     if (isset($_POST['delete_current_img']) && $_POST['delete_current_img'] == '1') {
+        deletePhysicalFile($oldImageUrl);
         $imageUrl = 'default.jpg';
     }
 
-    /**
-     * לוגיקת אישור חכמה:
-     * 1. אדמין תמיד נשאר מאושר.
-     * 2. אם המתכון פרטי - מאושר אוטומטית.
-     * 3. אם ציבורי וזה משתמש רגיל - חוזר להמתנה.
-     */
-    if ($userRole === 'admin' || $isPublic == 0) {
-        $newApprovedStatus = 1;
-    } else {
-        $newApprovedStatus = 0;
-    }
+    // לוגיקת אישור חכמה
+    $newApprovedStatus = ($userRole === 'admin' || $isPublic == 0) ? 1 : 0;
 
-    // טיפול בהעלאת תמונה חדשה
+    // טיפול בתמונה חדשה
     if (isset($_FILES['recipe_img']) && $_FILES['recipe_img']['error'] === UPLOAD_ERR_OK) {
-        $file_ext = strtolower(pathinfo($_FILES['recipe_img']['name'], PATHINFO_EXTENSION));
-        if (in_array($file_ext, ['jpg', 'jpeg', 'png', 'webp']) && $_FILES['recipe_img']['size'] <= 5000000) {
-            $new_file_name = uniqid('recipe_', true) . '.' . $file_ext;
-            $upload_dir = 'uploads/recipes/';
-            if (!is_dir($upload_dir)) { mkdir($upload_dir, 0777, true); }
-            $destination = $upload_dir . $new_file_name;
-            if (move_uploaded_file($_FILES['recipe_img']['tmp_name'], $destination)) {
-                $imageUrl = $destination; 
+        $tempPath = $_FILES['recipe_img']['tmp_name'];
+        $file_info = getimagesize($tempPath);
+        
+        if ($file_info) {
+            $type = $file_info[2];
+            switch ($type) {
+                case IMAGETYPE_JPEG: $source = imagecreatefromjpeg($tempPath); break;
+                case IMAGETYPE_PNG:  $source = imagecreatefrompng($tempPath); break;
+                case IMAGETYPE_WEBP: $source = imagecreatefromwebp($tempPath); break;
+                default: $source = null;
+            }
+
+            if ($source) {
+                $newWidth = 800;
+                $newHeight = floor($file_info[1] * ($newWidth / $file_info[0]));
+                $virtualImage = imagecreatetruecolor($newWidth, $newHeight);
+                
+                imagealphablending($virtualImage, false);
+                imagesavealpha($virtualImage, true);
+                imagecopyresampled($virtualImage, $source, 0, 0, 0, 0, $newWidth, $newHeight, $file_info[0], $file_info[1]);
+                
+                $upload_dir = 'uploads/recipes/';
+                if (!is_dir($upload_dir)) { mkdir($upload_dir, 0777, true); }
+                
+                $new_file_name = uniqid('recipe_', true) . '.jpg';
+                $destination = $upload_dir . $new_file_name;
+                
+                if (imagejpeg($virtualImage, $destination, 75)) {
+                    // מחיקת התמונה הישנה מהשרת כי יש חדשה
+                    deletePhysicalFile($oldImageUrl);
+                    $imageUrl = $destination;
+                    $fileWasUploaded = true;
+                }
+                imagedestroy($source);
+                imagedestroy($virtualImage);
             }
         }
     }
@@ -104,33 +145,35 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST') {
             $isPublic, $newApprovedStatus, $recipeId
         ]);
 
-        // עדכון מצרכים: מחיקה והכנסה מחדש
+        // עדכון מצרכים
         $pdo->prepare("DELETE FROM ingredients WHERE recipe_id = ?")->execute([$recipeId]);
         $insIng = $pdo->prepare("INSERT INTO ingredients (recipe_id, amount, ingredient_name, ingredient_description) VALUES (?, ?, ?, ?)");
-        foreach ($_POST['ing_names'] as $i => $name) {
-            if (!empty(trim($name))) {
-                $amount = $_POST['ing_amounts'][$i] ?? '';
-                $desc = $_POST['ing_descs'][$i] ?? '';
-                $insIng->execute([$recipeId, $amount, $name, $desc]);
+        if (isset($_POST['ing_names'])) {
+            foreach ($_POST['ing_names'] as $i => $name) {
+                $trimmedName = trim($name);
+                if (!empty($trimmedName)) {
+                    $insIng->execute([$recipeId, $_POST['ing_amounts'][$i] ?? '', $trimmedName, $_POST['ing_descs'][$i] ?? '']);
+                }
             }
         }
 
-        // עדכון הוראות: מחיקה והכנסה מחדש
+        // עדכון הוראות
         $pdo->prepare("DELETE FROM instructions WHERE recipe_id = ?")->execute([$recipeId]);
         $insStep = $pdo->prepare("INSERT INTO instructions (recipe_id, instruction_text) VALUES (?, ?)");
-        foreach ($_POST['steps'] as $step) {
-            if (!empty(trim($step))) { 
-                $insStep->execute([$recipeId, $step]); 
+        if (isset($_POST['steps'])) {
+            foreach ($_POST['steps'] as $step) {
+                $trimmedStep = trim($step);
+                if (!empty($trimmedStep)) { $insStep->execute([$recipeId, $trimmedStep]); }
             }
         }
 
         $pdo->commit();
-        
-        $statusMsg = ($newApprovedStatus === 1) ? "updated" : "pending";
-        header("Location: my_recipes.php?status=" . $statusMsg); 
+        header("Location: my_recipes.php?status=" . (($newApprovedStatus === 1) ? "updated" : "pending")); 
         exit;
     } catch (Exception $e) {
         $pdo->rollBack();
+        // אם נכשלנו והספקנו להעלות קובץ - ננקה אותו
+        if ($fileWasUploaded && $imageUrl !== 'default.jpg') { unlink($imageUrl); }
         die("שגיאה בעדכון: " . $e->getMessage());
     }
 }
@@ -148,7 +191,7 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST') {
         .glass-card { background: rgba(255,255,255,0.03); backdrop-filter: blur(15px); border-radius: 25px; border: 1px solid rgba(255,255,255,0.1); padding: 30px; max-width: 800px; margin: auto; }
         h2 { color: var(--accent); text-align: center; }
         .section { background: rgba(255,255,255,0.02); padding: 20px; border-radius: 15px; margin-bottom: 20px; position: relative; }
-        input, select, textarea { width: 100%; padding: 12px; margin: 10px 0; background: #1e293b; border: 1px solid #334155; color: white; border-radius: 10px; box-sizing: border-box; }
+        input, select, textarea { width: 100%; padding: 12px; margin: 10px 0; background: #1e293b; border: 1px solid #334155; color: white; border-radius: 10px; box-sizing: border-box; outline: none; }
         .row { display: flex; gap: 10px; align-items: center; margin-bottom: 10px; }
         .btn-save { background: linear-gradient(45deg, #4facfe, #00f2fe); color: #0f172a; border: none; padding: 15px; width: 100%; border-radius: 50px; font-weight: bold; cursor: pointer; font-size: 1.1rem; }
         .btn-add { background: none; border: 1px dashed var(--accent); color: var(--accent); padding: 10px; width: 100%; cursor: pointer; border-radius: 10px; }
@@ -161,11 +204,15 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST') {
 <body>
 
 <div class="glass-card">
+    <a href="my_recipes.php" style="color: #94a3b8; text-decoration: none;">← ביטול וחזרה למחברת</a>
     <h2>עריכת מתכון ✨</h2>
     
     <form method="POST" enctype="multipart/form-data">
         <div class="section">
+            <label>כותרת המתכון</label>
             <input type="text" name="title" value="<?php echo htmlspecialchars($recipe['title']); ?>" required>
+            
+            <label>קטגוריה</label>
             <select name="category_id">
                 <?php foreach($categories as $c): ?>
                     <option value="<?php echo $c['id']; ?>" <?php echo ($c['id'] == $recipe['category_id']) ? 'selected' : ''; ?>>
@@ -180,14 +227,13 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST') {
             <div class="upload-area">
                 <input type="hidden" name="delete_current_img" id="deleteImgFlag" value="0">
                 <input type="file" id="recipe_img_input" name="recipe_img" accept="image/*" onchange="previewImage(event)">
-                
                 <img id="recipe-preview" src="<?php echo htmlspecialchars($recipe['image_url'] ?: 'default.jpg'); ?>">
-                
                 <button type="button" id="remove-img-btn" class="remove-x" onclick="removeEditImage(event)" 
                         style="<?php echo ($recipe['image_url'] == 'default.jpg') ? 'display:none;' : ''; ?>">✕</button>
                 <p style="margin-top: 10px; font-size: 0.85rem; color: var(--accent);">לחץ להחלפת תמונה</p>
             </div>
-            <input type="text" name="video_url" value="<?php echo htmlspecialchars($recipe['video_url']); ?>" placeholder="🎥 קישור ליוטיוב">
+            <label style="margin-top:15px; display:block;">🎥 קישור ליוטיוב</label>
+            <input type="text" name="video_url" value="<?php echo htmlspecialchars($recipe['video_url']); ?>" placeholder="הדבק קישור כאן...">
         </div>
 
         <div class="section">
@@ -195,9 +241,9 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST') {
             <div id="ing-container">
                 <?php foreach($ing_list as $ing): ?>
                     <div class="row">
-                        <input type="text" name="ing_amounts[]" value="<?php echo htmlspecialchars($ing['amount']); ?>" placeholder="כמות (מספר וברבים)" style="flex:1">
+                        <input type="text" name="ing_amounts[]" value="<?php echo htmlspecialchars($ing['amount']); ?>" placeholder="כמות ברבים" style="flex:1">
                         <input type="text" name="ing_names[]" value="<?php echo htmlspecialchars($ing['ingredient_name']); ?>" placeholder="מצרך" style="flex:2">
-                        <input type="text" name="ing_descs[]" value="<?php echo htmlspecialchars($ing['ingredient_description']); ?>" placeholder="תיאור" style="flex:2">
+                        <input type="text" name="ing_descs[]" value="<?php echo htmlspecialchars($ing['ingredient_description']); ?>" placeholder="תחליף אם יש" style="flex:2">
                         <button type="button" style="background:none; border:none; color:var(--danger); cursor:pointer;" onclick="this.parentElement.remove()">✕</button>
                     </div>
                 <?php endforeach; ?>
@@ -210,7 +256,7 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST') {
             <div id="steps-container">
                 <?php foreach($ins_list as $ins): ?>
                     <div class="row">
-                        <textarea name="steps[]" rows="2" style="flex:1"><?php echo htmlspecialchars($ins['instruction_text']); ?></textarea>
+                        <textarea name="steps[]" rows="2" style="flex:1" required><?php echo htmlspecialchars($ins['instruction_text']); ?></textarea>
                         <button type="button" style="background:none; border:none; color:var(--danger); cursor:pointer;" onclick="this.parentElement.remove()">✕</button>
                     </div>
                 <?php endforeach; ?>
@@ -224,7 +270,6 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST') {
         </label>
 
         <button type="submit" class="btn-save">שמור שינויים ✅</button>
-        <a href="my_recipes.php" style="display: block; text-align: center; margin-top: 15px; color: #94a3b8; text-decoration: none;">ביטול</a>
     </form>
 </div>
 
@@ -247,8 +292,7 @@ function previewImage(event) {
 }
 
 function removeEditImage(e) {
-    e.stopPropagation();
-    e.preventDefault();
+    e.stopPropagation(); e.preventDefault();
     if(confirm("האם למחוק את התמונה ולחזור לברירת מחדל?")) {
         document.getElementById('recipe_img_input').value = "";
         document.getElementById('recipe-preview').src = "default.jpg";
@@ -259,16 +303,16 @@ function removeEditImage(e) {
 
 function addIng() {
     const div = document.createElement('div'); div.className = 'row';
-    div.innerHTML = `<input type="text" name="ing_amounts[]" placeholder="כמות (מספר וברבים)" style="flex:1">
+    div.innerHTML = `<input type="text" name="ing_amounts[]" placeholder="כמות ברבים" style="flex:1">
                      <input type="text" name="ing_names[]" placeholder="מצרך" style="flex:2">
-                     <input type="text" name="ing_descs[]" placeholder="תיאור" style="flex:2">
+                     <input type="text" name="ing_descs[]" placeholder="תחליף אם יש" style="flex:2">
                      <button type="button" style="background:none; border:none; color:#ff4757; cursor:pointer;" onclick="this.parentElement.remove()">✕</button>`;
     document.getElementById('ing-container').appendChild(div);
 }
 
 function addStep() {
     const div = document.createElement('div'); div.className = 'row';
-    div.innerHTML = `<textarea name="steps[]" rows="2" style="flex:1" placeholder="שלב חדש..."></textarea>
+    div.innerHTML = `<textarea name="steps[]" rows="2" style="flex:1" placeholder="שלב חדש..." required></textarea>
                      <button type="button" style="background:none; border:none; color:#ff4757; cursor:pointer;" onclick="this.parentElement.remove()">✕</button>`;
     document.getElementById('steps-container').appendChild(div);
 }
