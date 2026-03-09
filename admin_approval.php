@@ -9,7 +9,7 @@ if (!isset($_SESSION['user_id']) || $_SESSION['role'] !== 'admin') {
 
 // 2. לוגיקת אישור מתכון
 if (isset($_GET['approve_id'])) {
-    $id = $_GET['approve_id'];
+    $id = (int)$_GET['approve_id']; // המרה למספר לביטחון
     // עדכון הסטטוס ל-1 (מאושר)
     $pdo->prepare("UPDATE recipes SET is_approved = 1 WHERE id = ?")->execute([$id]);
     header("Location: admin_approval.php?msg=approved"); 
@@ -18,7 +18,7 @@ if (isset($_GET['approve_id'])) {
 
 // 3. לוגיקת דחיית מתכון
 if (isset($_GET['reject_id'])) {
-    $id = $_GET['reject_id'];
+    $id = (int)$_GET['reject_id'];
     // דחייה הופכת את המתכון לפרטי (is_public = 0) ומאשרת אותו טכנית כדי שייעלם מהרשימה לבדיקה
     $pdo->prepare("UPDATE recipes SET is_public = 0, is_approved = 1 WHERE id = ?")->execute([$id]);
     header("Location: admin_approval.php?msg=rejected"); 
@@ -26,12 +26,16 @@ if (isset($_GET['reject_id'])) {
 }
 
 // 4. שליפת המתכונים שמחכים לאישור
-// השאילתה הזו מסונכרנת עם הבועה בדף הבית - היא מציגה הכל איפה ש is_approved = 0
-$pending = $pdo->query("SELECT r.*, u.username, c.name as cat_name FROM recipes r 
-                        JOIN users u ON r.user_id = u.id 
-                        JOIN categories c ON r.category_id = c.id 
-                        WHERE r.is_approved = 0 
-                        ORDER BY r.id DESC")->fetchAll();
+// עדכון: שולף רק מתכונים שהם ציבוריים (is_public = 1) וטרם אושרו (is_approved = 0)
+$pending = $pdo->query("
+    SELECT r.*, u.username, c.name as cat_name 
+    FROM recipes r 
+    JOIN users u ON r.user_id = u.id 
+    JOIN categories c ON r.category_id = c.id 
+    WHERE r.is_approved = 0 
+    AND r.is_public = 1 
+    ORDER BY r.id DESC
+")->fetchAll();
 ?>
 <!DOCTYPE html>
 <html lang="he" dir="rtl">
@@ -72,7 +76,7 @@ $pending = $pdo->query("SELECT r.*, u.username, c.name as cat_name FROM recipes 
 
 <div class="container">
     <a href="index.php" class="back-link">← חזרה לדף הבית</a>
-    <h1>📋 אישור מתכונים חדשים</h1>
+    <h1>📋 אישור מתכונים ציבוריים</h1>
 
     <?php if (empty($pending)): ?>
         <div class="empty-state">
