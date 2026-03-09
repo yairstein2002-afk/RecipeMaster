@@ -10,6 +10,21 @@ if (!isset($_SESSION['role']) || $_SESSION['role'] !== 'admin') {
 $currentAdminId = $_SESSION['user_id'];
 
 /**
+ * פונקציה למחיקה פיזית של תמונות מתכונים מהשרת
+ */
+function deleteUserRecipeImages($pdo, $condition, $params) {
+    $stmt = $pdo->prepare("SELECT image_url FROM recipes WHERE $condition");
+    $stmt->execute($params);
+    $images = $stmt->fetchAll();
+    foreach ($images as $img) {
+        // מחיקה רק אם הנתיב קיים בשרת ואינו תמונת ברירת המחדל
+        if (!empty($img['image_url']) && $img['image_url'] !== 'default.jpg' && file_exists($img['image_url'])) {
+            unlink($img['image_url']);
+        }
+    }
+}
+
+/**
  * פונקציה לשליחת התראה למשתמש על פעולת ניהול
  */
 function sendAdminNotification($pdo, $userId, $actorId) {
@@ -67,10 +82,13 @@ if (isset($_GET['toggle_role'])) {
     }
 }
 
-// 5. מחיקת מתכונים ציבוריים בלבד
+// 5. מחיקת מתכונים ציבוריים בלבד + מחיקת תמונותיהם מהשרת
 if (isset($_GET['clear_public'])) {
     $targetId = (int)$_GET['clear_public'];
     if (!isTargetAdmin($pdo, $targetId)) {
+        // מחיקת קבצי התמונות לפני מחיקת השורות ב-DB
+        deleteUserRecipeImages($pdo, "user_id = ? AND is_public = 1", [$targetId]);
+
         $pdo->prepare("DELETE FROM ingredients WHERE recipe_id IN (SELECT id FROM recipes WHERE user_id = ? AND is_public = 1)")->execute([$targetId]);
         $pdo->prepare("DELETE FROM instructions WHERE recipe_id IN (SELECT id FROM recipes WHERE user_id = ? AND is_public = 1)")->execute([$targetId]);
         $pdo->prepare("DELETE FROM recipes WHERE user_id = ? AND is_public = 1")->execute([$targetId]);
@@ -78,16 +96,50 @@ if (isset($_GET['clear_public'])) {
     }
 }
 
-// 6. מחיקת כל התוכן (כולל פרטי)
+// 6. מחיקת כל התוכן (כולל פרטי) + מחיקת כל התמונות מהשרת
 if (isset($_GET['clear_all_content'])) {
     $targetId = (int)$_GET['clear_all_content'];
     if (!isTargetAdmin($pdo, $targetId)) {
+        // מחיקת כל קבצי התמונות של המשתמש
+        deleteUserRecipeImages($pdo, "user_id = ?", [$targetId]);
+
         $pdo->prepare("DELETE FROM ingredients WHERE recipe_id IN (SELECT id FROM recipes WHERE user_id = ?)")->execute([$targetId]);
         $pdo->prepare("DELETE FROM instructions WHERE recipe_id IN (SELECT id FROM recipes WHERE user_id = ?)")->execute([$targetId]);
         $pdo->prepare("DELETE FROM comments WHERE recipe_id IN (SELECT id FROM recipes WHERE user_id = ?)")->execute([$targetId]);
         $pdo->prepare("DELETE FROM likes WHERE recipe_id IN (SELECT id FROM recipes WHERE user_id = ?)")->execute([$targetId]);
         $pdo->prepare("DELETE FROM recipes WHERE user_id = ?")->execute([$targetId]);
         header("Location: admin_users.php?status=all_cleared"); exit;
+    }
+}
+
+// 7. מחיקת משתמש לצמיתות (כולל ניקוי כל הקבצים מהשרת)
+if (isset($_GET['delete_user'])) {
+    $targetId = (int)$_GET['delete_user'];
+    if (!isTargetAdmin($pdo, $targetId)) {
+        
+        // מחיקת תמונות המתכונים
+        deleteUserRecipeImages($pdo, "user_id = ?", [$targetId]);
+
+        // מחיקת תמונת הפרופיל של המשתמש
+        $stmt_user_img = $pdo->prepare("SELECT profile_img FROM users WHERE id = ?");
+        $stmt_user_img->execute([$targetId]);
+        $profileImg = $stmt_user_img->fetchColumn();
+        if ($profileImg && $profileImg !== 'user-default.png' && file_exists($profileImg)) {
+            unlink($profileImg);
+        }
+
+        // ניקוי טבלאות מקושרות
+        $pdo->prepare("DELETE FROM ingredients WHERE recipe_id IN (SELECT id FROM recipes WHERE user_id = ?)")->execute([$targetId]);
+        $pdo->prepare("DELETE FROM instructions WHERE recipe_id IN (SELECT id FROM recipes WHERE user_id = ?)")->execute([$targetId]);
+        $pdo->prepare("DELETE FROM comments WHERE user_id = ? OR recipe_id IN (SELECT id FROM recipes WHERE user_id = ?)")->execute([$targetId, $targetId]);
+        $pdo->prepare("DELETE FROM likes WHERE user_id = ? OR recipe_id IN (SELECT id FROM recipes WHERE user_id = ?)")->execute([$targetId, $targetId]);
+        $pdo->prepare("DELETE FROM recipes WHERE user_id = ?")->execute([$targetId]);
+        $pdo->prepare("DELETE FROM notifications WHERE user_id = ? OR actor_id = ?")->execute([$targetId, $targetId]);
+        $pdo->prepare("DELETE FROM messages WHERE user_id = ?")->execute([$targetId]);
+        
+        // מחיקת המשתמש עצמו
+        $pdo->prepare("DELETE FROM users WHERE id = ?")->execute([$targetId]);
+        header("Location: admin_users.php?status=user_deleted"); exit;
     }
 }
 
@@ -122,6 +174,7 @@ $bannedUsers = $pdo->query("SELECT * FROM users WHERE status = 'banned' OR is_bl
         .btn-ban { background: var(--danger); color: white; }
         .btn-clear-pub { background: transparent; border: 1px solid var(--info); color: var(--info); }
         .btn-clear-all { background: transparent; border: 1px solid var(--danger); color: var(--danger); }
+        .btn-delete-final { background: #000; color: #ff4757; border: 1px solid #ff4757; }
         .status-msg { background: var(--success); color: white; padding: 12px; border-radius: 10px; margin-bottom: 20px; text-align: center; }
     </style>
 </head>
@@ -134,7 +187,13 @@ $bannedUsers = $pdo->query("SELECT * FROM users WHERE status = 'banned' OR is_bl
     </div>
 
     <?php if(isset($_GET['status'])): ?>
-        <div class="status-msg">✅ הפעולה בוצעה בהצלחה! המערכת עודכנה.</div>
+        <div class="status-msg">
+            <?php 
+                $s = $_GET['status'];
+                if($s == 'user_deleted') echo "🚮 המשתמש וכל תוכן הקשור אליו נמחקו לצמיתות מהשרת.";
+                else echo "✅ הפעולה בוצעה בהצלחה! המערכת עודכנה.";
+            ?>
+        </div>
     <?php endif; ?>
 
     <input type="text" id="userSearch" class="admin-search" placeholder="🔍 חפש לפי שם או אימייל..." onkeyup="filterUsers()">
@@ -147,9 +206,10 @@ $bannedUsers = $pdo->query("SELECT * FROM users WHERE status = 'banned' OR is_bl
                 <tr class="user-row">
                     <td class="name-cell"><b><?php echo htmlspecialchars($pu['username']); ?></b></td>
                     <td class="email-cell"><?php echo htmlspecialchars($pu['email']); ?></td>
-                    <td width="20%">
+                    <td>
                         <a href="?approve_user=<?php echo $pu['id']; ?>" class="btn btn-approve">אשר</a>
                         <a href="?ban_user=<?php echo $pu['id']; ?>" class="btn btn-ban">חסום</a>
+                        <a href="?delete_user=<?php echo $pu['id']; ?>" class="btn btn-delete-final" onclick="return confirm('למחוק לצמיתות?')">מחק 🗑️</a>
                     </td>
                 </tr>
                 <?php endforeach; ?>
@@ -182,8 +242,9 @@ $bannedUsers = $pdo->query("SELECT * FROM users WHERE status = 'banned' OR is_bl
                 <td>
                     <?php if ($u['role'] !== 'admin'): ?>
                         <a href="?clear_public=<?php echo $u['id']; ?>" class="btn btn-clear-pub" onclick="return confirm('למחוק מתכונים ציבוריים בלבד?')">מחק ציבורי</a>
-                        <a href="?clear_all_content=<?php echo $u['id']; ?>" class="btn btn-clear-all" onclick="return confirm('אזהרה: זה ימחוק את כל המתכונים כולל הפרטיים!')">מחק הכל</a>
+                        <a href="?clear_all_content=<?php echo $u['id']; ?>" class="btn btn-clear-all" onclick="return confirm('זה ימחוק הכל כולל הפרטיים!')">מחק הכל</a>
                         <a href="?ban_user=<?php echo $u['id']; ?>" class="btn btn-ban">חסום</a>
+                        <a href="?delete_user=<?php echo $u['id']; ?>" class="btn btn-delete-final" onclick="return confirm('פעולה סופית: מחיקת המשתמש וכל קבציו לצמיתות. להמשיך?')">מחק לצמיתות 🗑️</a>
                         <a href="?toggle_role=<?php echo $u['id']; ?>" class="btn" style="border: 1px solid var(--accent); color: var(--accent);">מנה למנהל</a>
                     <?php else: ?>
                         <small style="opacity:0.4;"><?php echo ($u['id'] == $currentAdminId) ? '(זה אתה)' : '🛡️ מנהל מוגן'; ?></small>
@@ -200,9 +261,12 @@ $bannedUsers = $pdo->query("SELECT * FROM users WHERE status = 'banned' OR is_bl
             <tbody>
                 <?php foreach($bannedUsers as $bu): ?>
                 <tr>
-                    <td><b><?php echo htmlspecialchars($bu['username']); ?></b></td>
-                    <td style="opacity: 0.6;"><?php echo htmlspecialchars($bu['email']); ?></td>
-                    <td><a href="?unban_user=<?php echo $bu['id']; ?>" class="btn btn-approve">שחרר חסימה 🔓</a></td>
+                    <td class="name-cell"><b><?php echo htmlspecialchars($bu['username']); ?></b></td>
+                    <td class="email-cell" style="opacity: 0.6;"><?php echo htmlspecialchars($bu['email']); ?></td>
+                    <td>
+                        <a href=\"?unban_user=<?php echo $bu['id']; ?>\" class=\"btn btn-approve\">שחרר חסימה 🔓</a>
+                        <a href=\"?delete_user=<?php echo $bu['id']; ?>\" class=\"btn btn-delete-final\" onclick=\"return confirm('למחוק לצמיתות?')\">מחק 🗑️</a>
+                    </td>
                 </tr>
                 <?php endforeach; ?>
             </tbody>
