@@ -79,8 +79,10 @@ if (isset($_POST['toggle_like']) && $userId && $userStatus === 'approved') {
 
 // --- 6. תגובות (ניתוב התראות חכם) ---
 if (isset($_POST['submit_comment']) && $userId && !empty(trim($_POST['comment_text']))) {
-    if ($userStatus !== 'approved') die("גישה חסומה.");
-    
+if ($userStatus !== 'approved') {
+    header("Location: view_recipe.php?id=$recipeId&error=access_denied");
+    exit;
+}    
     // 1. בדיקת ספאם (דקה בין תגובות)
     $stmt_check_spam = $pdo->prepare("
         SELECT COUNT(*) FROM comments 
@@ -144,13 +146,18 @@ if (isset($_POST['submit_comment']) && $userId && !empty(trim($_POST['comment_te
 }
 
 // --- שליפת נתונים לתצוגה ---
-$recipe_stmt = $pdo->prepare("SELECT r.*, u.username, u.profile_img, 
-                (SELECT COUNT(*) FROM likes WHERE recipe_id = r.id) as likes_count, 
-                (SELECT COUNT(*) FROM likes WHERE recipe_id = r.id AND user_id = ?) as user_liked,
-                (SELECT COUNT(*) FROM recipe_views WHERE recipe_id = r.id) as real_views
-                FROM recipes r 
-                JOIN users u ON r.user_id = u.id 
-                WHERE r.id = ?");
+$recipe_stmt = $pdo->prepare("
+    SELECT r.*, u.username, u.profile_img, 
+           COUNT(DISTINCT l.id) as likes_count,
+           COUNT(DISTINCT v.user_id) as real_views,
+           MAX(CASE WHEN l.user_id = ? THEN 1 ELSE 0 END) as user_liked
+    FROM recipes r 
+    JOIN users u ON r.user_id = u.id 
+    LEFT JOIN likes l ON r.id = l.recipe_id
+    LEFT JOIN recipe_views v ON r.id = v.recipe_id
+    WHERE r.id = ?
+    GROUP BY r.id
+");
 $recipe_stmt->execute([$userId, $recipeId]);
 $recipe = $recipe_stmt->fetch();
 
@@ -374,21 +381,29 @@ function renderComments($parentId, $commentsByParent, $userId, $userStatus, $isR
     </div>
 
     <div class="grid">
-        <div class="card">
-            <h3>🛒 מצרכים</h3>
-            <?php foreach ($ingredients as $ing): 
-                $line = trim($ing['amount'] . " " . $ing['ingredient_name'] . " " . ($ing['ingredient_description'] ? "({$ing['ingredient_description']})" : ""));
-            ?>
-                <label style="display:flex; gap:10px; margin-bottom:12px; cursor: pointer; align-items: center;">
-                    <input type="checkbox" class="ing-checkbox" 
-                           data-name="<?php echo htmlspecialchars($ing['ingredient_name']); ?>" 
-                           data-line="<?php echo htmlspecialchars($line); ?>"
-                           onchange="updateList(this)"
-                           style="width:18px; height:18px; accent-color: var(--accent);">
-                    <span><?php echo htmlspecialchars($line); ?></span>
-                </label>
-            <?php endforeach; ?>
-        </div>
+
+    
+<div class="card">
+    <h3>🛒 מצרכים</h3>
+    <div class="ingredients-list">
+        <?php foreach ($ingredients as $index => $ing): 
+            $line = trim($ing['amount'] . " " . $ing['ingredient_name'] . " " . ($ing['ingredient_description'] ? "({$ing['ingredient_description']})" : ""));
+            // מזהה ייחודי לכל שורה למניעת השפעה הדדית
+            $uniqueId = $recipeId . "_item_" . $index; 
+        ?>
+            <label class="ingredient-row" style="display:flex; gap:12px; margin-bottom:12px; cursor: pointer; align-items: center;">
+                <input type="checkbox" class="ing-checkbox" 
+                       data-id="<?php echo $uniqueId; ?>" 
+                       data-line="<?php echo htmlspecialchars($line); ?>"
+                       onchange="updateList(this)"
+                       style="width:20px; height:20px; accent-color: var(--accent);">
+                
+ <span class="ing-text" style="transition: 0.3s;"><?= e($line) ?></span>                
+            </label>
+        <?php endforeach; ?>
+    </div>
+</div>
+        
         <div class="card">
             <h3>👨‍🍳 הכנה</h3>
             <?php foreach ($instructions as $i => $ins): ?>
@@ -444,26 +459,65 @@ function toggleComments(id, btn) {
         container.style.display = 'none'; btn.innerHTML = 'הצג ' + count + ' תגובות ▼';
     }
 }
-
 const cartKey = 'shopping_list_<?php echo $_SESSION['username'] ?? 'guest'; ?>';
+
 function updateList(cb) {
+    const cartKey = 'shopping_list_<?php echo $_SESSION['username'] ?? 'guest'; ?>';
     let list = JSON.parse(localStorage.getItem(cartKey)) || [];
-    const name = cb.dataset.name; const line = cb.dataset.line;
-    const recipeId = "<?php echo $recipeId; ?>";
-    const id = recipeId + "_" + name;
-    if (cb.checked) { list.push({ id: id, fullText: line }); } 
-    else { list = list.filter(i => i.id !== id); }
+    const id = cb.dataset.id;
+    const line = cb.dataset.line;
+    
+    // מציאת הטקסט (span) שנמצא מיד אחרי הצ'קבוקס הזה בלבד
+    const textSpan = cb.nextElementSibling;
+
+    if (cb.checked) {
+        // הוספה ל-LocalStorage
+        if (!list.find(i => i.id === id)) {
+            list.push({ id: id, fullText: line });
+        }
+        // שינוי ויזואלי - שקיפות בלבד ללא קו
+        textSpan.style.opacity = '0.3';
+    } else {
+        // הסרה מה-LocalStorage
+        list = list.filter(i => i.id !== id);
+        // החזרת המראה המקורי
+        textSpan.style.opacity = '1';
+    }
+    
     localStorage.setItem(cartKey, JSON.stringify(list));
 }
 
+// קוד לטעינה ראשונית של הדף - שומר על הסימונים של המשתמש
+document.addEventListener('DOMContentLoaded', () => {
+    const cartKey = 'shopping_list_<?php echo $_SESSION['username'] ?? 'guest'; ?>';
+    const list = JSON.parse(localStorage.getItem(cartKey)) || [];
+    
+    document.querySelectorAll('.ing-checkbox').forEach(cb => {
+        if (list.some(i => i.id === cb.dataset.id)) {
+            cb.checked = true;
+            cb.nextElementSibling.style.opacity = '0.3';
+        }
+    });
+});
+
+// טעינת המצב השמור כשהדף עולה
+// איחוד הטעינה הראשונית של המצרכים
 document.addEventListener('DOMContentLoaded', () => {
     const list = JSON.parse(localStorage.getItem(cartKey)) || [];
+    
     document.querySelectorAll('.ing-checkbox').forEach(cb => {
-        const id = "<?php echo $recipeId; ?>_" + cb.dataset.name;
-        if (list.some(i => i.id === id)) cb.checked = true;
+        const id = cb.dataset.id;
+        const textSpan = cb.nextElementSibling;
+
+        if (list.some(i => i.id === id)) {
+            cb.checked = true;
+            textSpan.style.opacity = '0.3';
+            textSpan.style.filter = 'grayscale(100%)';
+        }
     });
 });
 </script>
 </body>
 </html>
+
 
