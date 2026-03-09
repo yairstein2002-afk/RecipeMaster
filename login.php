@@ -1,17 +1,12 @@
 <?php
-session_start();
-// אם המשתמש כבר מחובר, אין סיבה שיישאר פה
-if (isset($_SESSION['user_id'])) { 
-    header("Location: index.php"); 
-    exit; 
-}
-
-// קבלת הודעות שגיאה מה-URL (למשל מ-google_auth.php)
+// קבלת הודעות שגיאה מה-URL
 $error = isset($_GET['error']) ? $_GET['error'] : null;
 $error_msg = "";
 
-if ($error === 'banned') {
-    $error_msg = "🚫 חשבונך נחסם לצמיתות מהאתר עקב הפרת התקנון.";
+if ($error === 'banned' || $error === 'is_blocked') {
+    // שליפת סיבת החסימה מה-URL במידה וקיימת, וניקוי שלה מפני הזרקות (XSS)
+    $reason = isset($_GET['reason']) ? htmlspecialchars($_GET['reason']) : "הפרת תקנון האתר";
+    $error_msg = "🚫 חשבונך נחסם: " . $reason;
 } elseif ($error === 'pending') {
     $error_msg = "⏳ חשבונך ממתין לאישור מנהל. תוכל להיכנס ברגע שהפרופיל יאושר.";
 } elseif ($error === 'auth_failed') {
