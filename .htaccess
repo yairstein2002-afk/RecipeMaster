@@ -1,0 +1,19 @@
+# 1. מניעת גישה ישירה לקבצי הגדרות וסודות
+<FilesMatch "^(db\.php|config\.php|\.env|.*\.log|.*\.sql)$">
+    Order allow,deny
+    Deny from all
+</FilesMatch>
+
+# 2. מניעת צפייה ברשימת הקבצים בתיקיות (Directory Listing)
+# מונע מתוקף לראות את מבנה התיקיות שלך אם אין שם קובץ index
+Options -Indexes
+
+# 3. הגנה מפני הזרקת סקריפטים ושינויי MIME
+<IfModule mod_headers.c>
+    Header set X-Content-Type-Options "nosniff"
+    Header set X-Frame-Options "SAMEORIGIN"
+    Header set X-XSS-Protection "1; mode=block"
+</IfModule>
+
+# 4. הגבלת גודל העלאת קבצים (הגנה מפני DoS)
+LimitRequestBody 7340032
