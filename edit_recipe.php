@@ -152,13 +152,14 @@ if (!is_dir($upload_dir)) {
         ]);
 
         // עדכון מצרכים
+        // עדכון מצרכים (ללא עמודת כמות)
         $pdo->prepare("DELETE FROM ingredients WHERE recipe_id = ?")->execute([$recipeId]);
-        $insIng = $pdo->prepare("INSERT INTO ingredients (recipe_id, amount, ingredient_name, ingredient_description) VALUES (?, ?, ?, ?)");
+        $insIng = $pdo->prepare("INSERT INTO ingredients (recipe_id, ingredient_name, ingredient_description) VALUES (?, ?, ?)");
         if (isset($_POST['ing_names'])) {
             foreach ($_POST['ing_names'] as $i => $name) {
                 $trimmedName = trim($name);
                 if (!empty($trimmedName)) {
-                    $insIng->execute([$recipeId, $_POST['ing_amounts'][$i] ?? '', $trimmedName, $_POST['ing_descs'][$i] ?? '']);
+                    $insIng->execute([$recipeId, $trimmedName, $_POST['ing_descs'][$i] ?? '']);
                 }
             }
         }
@@ -242,14 +243,13 @@ if (!is_dir($upload_dir)) {
             <input type="text" name="video_url" value="<?php echo htmlspecialchars($recipe['video_url']); ?>" placeholder="הדבק קישור כאן...">
         </div>
 
-        <div class="section">
+   <div class="section">
             <h3>🛒 מצרכים</h3>
             <div id="ing-container">
                 <?php foreach($ing_list as $ing): ?>
                     <div class="row">
-                        <input type="text" name="ing_amounts[]" value="<?php echo htmlspecialchars($ing['amount']); ?>" placeholder="כמות (גרם או מ'ל)" style="flex:1">
-                        <input type="text" name="ing_names[]" value="<?php echo htmlspecialchars($ing['ingredient_name']); ?>" placeholder="מצרך" style="flex:2">
-                        <input type="text" name="ing_descs[]" value="<?php echo htmlspecialchars($ing['ingredient_description']); ?>" placeholder="תחליף אם יש" style="flex:2">
+                        <input type="text" name="ing_names[]" value="<?php echo htmlspecialchars($ing['ingredient_name']); ?>" placeholder="שם המצרך וכמות (למשל: 2 כוסות קמח)" style="flex:2" required>
+                        <input type="text" name="ing_descs[]" value="<?php echo htmlspecialchars($ing['ingredient_description']); ?>" placeholder="תחליף אם יש" style="flex:1">
                         <button type="button" style="background:none; border:none; color:var(--danger); cursor:pointer;" onclick="this.parentElement.remove()">✕</button>
                     </div>
                 <?php endforeach; ?>
@@ -309,9 +309,8 @@ function removeEditImage(e) {
 
 function addIng() {
     const div = document.createElement('div'); div.className = 'row';
-    div.innerHTML = `<input type="text" name="ing_amounts[]" placeholder="כמות (גרם או מ'ל)" style="flex:1">
-                     <input type="text" name="ing_names[]" placeholder="מצרך" style="flex:2">
-                     <input type="text" name="ing_descs[]" placeholder="תחליף אם יש" style="flex:2">
+    div.innerHTML = `<input type="text" name="ing_names[]" placeholder="שם המצרך וכמות (למשל: 2 כוסות קמח)" style="flex:2" required>
+                     <input type="text" name="ing_descs[]" placeholder="תחליף אם יש" style="flex:1">
                      <button type="button" style="background:none; border:none; color:#ff4757; cursor:pointer;" onclick="this.parentElement.remove()">✕</button>`;
     document.getElementById('ing-container').appendChild(div);
 }
