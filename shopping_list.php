@@ -56,23 +56,92 @@ require_once 'db.php';
 
 <script>
 const currentUser = "<?php echo $_SESSION['username'] ?? 'guest'; ?>";
-// שואב את שם המשתמש מה-PHP. אם הוא לא מחובר, הוא נקרא "guest".
-
 const cartKey = 'shopping_list_' + currentUser;
-// יוצר שם ייחודי לשמירת רשימת המוצרים בדפדפן (למשל: shopping_list_yair).
-
 const checkedKey = 'checked_items_' + currentUser;
-// יוצר שם ייחודי לשמירת הפריטים שכבר סימנת עליהם "V".
+
+function parseIngredient(rawText) {
+    let text = rawText.trim().replace(/\s+/g, ' ');
+    
+    // ניקוי מלא של כל אזכור תחליף (בסוגריים או אחרי המילה 'תחליף:' / 'או:') כדי שלא יוצג ולא יפגע בחישוב
+    text = text.replace(/[\(\[](?:תחליף|או)?:?\s*[^\]\)]+[\)\]]/gi, '').trim();
+    text = text.replace(/(?:תחליף|או):\s*.*$/gi, '').trim();
+
+    // פונקציית עזר פנימית לתרגום מילים לשברים עשרוניים
+    function getFrac(f) {
+        if (f === 'חצי') return 0.5;
+        if (f === 'רבע') return 0.25;
+        if (f === 'שליש') return 0.33;
+        if (f === 'שני שליש' || f === 'שני שלישים') return 0.66;
+        if (f === 'שלוש רבעים' || f === 'שלושה רבעים') return 0.75;
+        return 0;
+    }
+
+    const fracList = "(חצי|רבע|שליש|שני שליש|שני שלישים|שלוש רבעים|שלושה רבעים)";
+
+    // 1. טיפול במצב של "2 כוסות ושלושה רבעים" -> "2.75 כוסות"
+    let re1 = new RegExp("^(\\d+)\\s+(כפיות|כפות|כוסות|שיני|חבילות)\\s+ו" + fracList + "(\\s|$)");
+    text = text.replace(re1, function(match, num, unit, frac, space) {
+        return (parseFloat(num) + getFrac(frac)) + ' ' + unit + space;
+    });
+
+    // 2. טיפול במצב של "כוס ושני שליש" -> "1.66 כוס"
+    let re2 = new RegExp("^(כפית|כף|כוס|שן|חבילה)\\s+ו" + fracList + "(\\s|$)");
+    text = text.replace(re2, function(match, unit, frac, space) {
+        return (1 + getFrac(frac)) + ' ' + unit + space;
+    });
+
+    // 3. טיפול במצב של "1 ושלוש רבעים כוסות" -> "1.75 כוסות"
+    let re3 = new RegExp("^(\\d+)\\s+ו" + fracList + "(\\s|$)");
+    text = text.replace(re3, function(match, num, frac, space) {
+        return (parseFloat(num) + getFrac(frac)) + space;
+    });
+
+    // 4. טיפול במילה בודדת בהתחלה ("שני שליש כוס") -> "0.66 כוס"
+    let re4 = new RegExp("^" + fracList + "\\s+");
+    text = text.replace(re4, function(match, frac) {
+        return getFrac(frac) + ' ';
+    });
+    
+    // 5. אם כתבו רק מידה בהתחלה ללא מספר ("כפית מלח") -> "1 כפית"
+    if (/^(כפית|כפיות|כף|כפות|כוס|כוסות|שן|שיני|קורט|מיכל|מכל|חבילה|חבילות)(\s|$)/.test(text)) {
+        text = '1 ' + text;
+    }
+
+    // מכאן והלאה - חילוץ המספר וזיהוי המוצר הנקי
+    const match = text.match(/^(\d+(\.\d+)?)\s*(.*)$/);
+    
+    if (match) {
+        const amount = parseFloat(match[1]);
+        let rest = match[3].trim();
+        
+        // נרמול ליחיד כדי ש-"כפיות" יחובר ל-"כפית"
+        let normalizedRest = rest
+            .replace(/^כפיות(\s|$)/, 'כפית$1')
+            .replace(/^כפות(\s|$)/, 'כף$1')
+            .replace(/^כוסות(\s|$)/, 'כוס$1')
+            .replace(/^שיני(\s|$)/, 'שן$1')
+            .replace(/^חבילות(\s|$)/, 'חבילה$1');
+
+        return { 
+            hasAmount: true, 
+            amount: amount, 
+            key: normalizedRest.toLowerCase(), 
+            display: normalizedRest 
+        };
+    } else {
+        return { 
+            hasAmount: false, 
+            amount: null, 
+            key: text.toLowerCase(), 
+            display: text 
+        };
+    }
+}
 
 function loadList() {
     const rawList = JSON.parse(localStorage.getItem(cartKey)) || [];
-    // מושך את רשימת המוצרים הגולמית מהזיכרון של הדפדפן.
-
     const checkedItems = JSON.parse(localStorage.getItem(checkedKey)) || [];
-    // מושך את רשימת הפריטים המסומנים (אלו שקנינו).
-
     const container = document.getElementById('listContainer');
-    // מוצא את המקום בדף ה-HTML שבו תוצג הרשימה.
     
     if (rawList.length === 0) {
         container.innerHTML = '';
@@ -80,51 +149,47 @@ function loadList() {
         document.getElementById('emptyMsg').style.display = 'block';
         return;
     }
-    // אם הרשימה ריקה: מנקה את התצוגה, מסתיר כפתורים ומראה הודעת "רשימה ריקה".
 
     const aggregated = {};
-    // יצירת אובייקט זמני שישמש לאיחוד מוצרים דומים.
 
     rawList.forEach(item => {
-        const text = item.fullText.trim().replace(/\s+/g, ' ');
-        // מנקה רווחים מיותרים מהטקסט של המוצר.
-
-        const match = text.match(/^(\d+(\.\d+)?)\s*(.*)$/);
-        // משתמש ב-Regex כדי להפריד בין המספר (כמות) לבין שם המוצר.
+        const parsed = parseIngredient(item.fullText);
         
-        if (match) {
-            const amount = parseFloat(match[1]); // המספר (למשל: 2)
-            const rest = match[3].trim(); // שם המוצר (למשל: "קמח")
-            const key = rest.toLowerCase(); // מפתח אחיד באותיות קטנות
-
-            if (aggregated[key]) {
-                aggregated[key].amount += amount; // אם המוצר כבר קיים, הוסף לכמות שלו
+        if (parsed.hasAmount) {
+            if (aggregated[parsed.key]) {
+                let currentAmount = aggregated[parsed.key].amount === null ? 1 : aggregated[parsed.key].amount;
+                aggregated[parsed.key].amount = currentAmount + parsed.amount;
             } else {
-                aggregated[key] = { amount: amount, display: rest, key: key }; // מוצר חדש ברשימה
+                aggregated[parsed.key] = parsed;
             }
         } else {
-            // אם אין מספר בטקסט, שמור את המוצר כפי שהוא ללא חישוב כמות
-            const key = text.toLowerCase();
-            if (!aggregated[key]) {
-                aggregated[key] = { amount: null, display: text, key: key };
+            if (!aggregated[parsed.key]) {
+                aggregated[parsed.key] = parsed;
             }
         }
     });
 
- document.getElementById('emptyMsg').style.display = 'none';
+    document.getElementById('emptyMsg').style.display = 'none';
     document.getElementById('footerActions').style.display = 'block';
     
     const itemsArray = Object.values(aggregated);
-    // הופך את האובייקט המאוחד חזרה למערך מסודר.
 
     container.innerHTML = itemsArray.map((item) => {
         const isChecked = checkedItems.includes(item.key);
-        // בודק אם המוצר הנוכחי נמצא ברשימת ה-"V".
+
+        let displayName = item.display;
+        if (item.amount > 1) {
+            displayName = displayName
+                .replace(/^כפית(\s|$)/, 'כפיות$1')
+                .replace(/^כף(\s|$)/, 'כפות$1')
+                .replace(/^כוס(\s|$)/, 'כוסות$1')
+                .replace(/^שן(\s|$)/, 'שיני$1')
+                .replace(/^חבילה(\s|$)/, 'חבילות$1');
+        }
 
         const label = item.amount !== null 
-            ? `<span class="amount-highlight">${item.amount}</span> ${item.display}` 
+            ? `<span class="amount-highlight">${item.amount}</span> ${displayName}` 
             : item.display;
-        // מעצב את הטקסט: מדגיש את הכמות אם היא קיימת.
 
         return `
             <div class="shopping-item">
@@ -138,10 +203,8 @@ function loadList() {
             </div>
         `;
     }).join('');
-    // בונה את כרטיס המוצר עם כפתור סימון וכפתור מחיקה.
 
     window.currentAggregatedData = itemsArray;
-    // שומר את הנתונים המאוחדים במשתנה גלובלי לצורך שיתוף בוואטסאפ.
 }
 
 function shareList() {
@@ -153,17 +216,6 @@ function shareList() {
     });
     window.open(`https://api.whatsapp.com/send?text=${encodeURIComponent(text)}`, '_blank');
 }
-
-function shareList() {
-    const data = window.currentAggregatedData;
-    if (!data) return;
-    let text = `🛒 *רשימת הקניות שלי מ-RecipeMaster* \n\n`;
-    data.forEach((item, i) => {
-        text += `${i + 1}. ${item.amount !== null ? item.amount + ' ' : ''}${item.display}\n`;
-    });
-    window.open(`https://api.whatsapp.com/send?text=${encodeURIComponent(text)}`, '_blank');
-}
-// אוספת את כל הפריטים המאוחדים ושולחת אותם כהודעה מעוצבת לוואטסאפ.
 
 function toggleCheck(key) {
     let checked = JSON.parse(localStorage.getItem(checkedKey)) || [];
@@ -172,20 +224,25 @@ function toggleCheck(key) {
     localStorage.setItem(checkedKey, JSON.stringify(checked));
     loadList();
 }
-// מוסיפה או מסירה מוצר מרשימת ה-"V" (בוצע).
 
 function removeSpecific(key) {
     let list = JSON.parse(localStorage.getItem(cartKey)) || [];
+    
     let newList = list.filter(item => {
-        const text = item.fullText.trim().replace(/\s+/g, ' ');
-        const match = text.match(/^(\d+(\.\d+)?)\s*(.*)$/);
-        const itemKey = match ? match[3].trim().toLowerCase() : text.toLowerCase();
-        return itemKey !== key;
+        const parsed = parseIngredient(item.fullText);
+        return parsed.key !== key; 
     });
+    
     localStorage.setItem(cartKey, JSON.stringify(newList));
+    
+    let checked = JSON.parse(localStorage.getItem(checkedKey)) || [];
+    if (checked.includes(key)) {
+        checked = checked.filter(i => i !== key);
+        localStorage.setItem(checkedKey, JSON.stringify(checked));
+    }
+
     loadList();
 }
-// מוחקת מוצר ספציפי מהרשימה לפי השם שלו.
 
 function clearAll() {
     if(confirm('למחוק את כל הרשימה?')) {
@@ -194,10 +251,8 @@ function clearAll() {
         loadList();
     }
 }
-// מוחקת את כל הנתונים מהזיכרון ומאפסת את הדף.
 
 document.addEventListener('DOMContentLoaded', loadList);
-// מבטיחה שהרשימה תיטען אוטומטית ברגע שהדף מסיים לעלות.
 </script>
 </body>
 </html>
