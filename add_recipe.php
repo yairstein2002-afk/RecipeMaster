@@ -106,13 +106,13 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST') {
         $stmt->execute([$userId, $categoryId, $title, $imageUrl, $videoUrl, $isPublic, $isApproved]);
         $recipeId = $pdo->lastInsertId();
 
-        // הכנסת מצרכים
+       // הכנסת מצרכים (ללא עמודת כמות נפרדת)
         if (!empty($_POST['ing_names'])) {
-            $insIng = $pdo->prepare("INSERT INTO ingredients (recipe_id, amount, ingredient_name, ingredient_description) VALUES (?, ?, ?, ?)");
+            $insIng = $pdo->prepare("INSERT INTO ingredients (recipe_id, ingredient_name, ingredient_description) VALUES (?, ?, ?)");
             foreach ($_POST['ing_names'] as $i => $name) {
                 $trimmedName = trim($name);
                 if (!empty($trimmedName)) {
-                    $insIng->execute([$recipeId, trim($_POST['ing_amounts'][$i] ?? ''), $trimmedName, trim($_POST['ing_descs'][$i] ?? '')]);
+                    $insIng->execute([$recipeId, $trimmedName, trim($_POST['ing_descs'][$i] ?? '')]);
                 }
             }
         }
@@ -210,7 +210,7 @@ $categories = $pdo->query("SELECT * FROM categories ORDER BY id ASC")->fetchAll(
         <h3>🍎 מצרכים</h3>
         <div id="ing-area">
             <div class="row">
-                <input type="text" name="ing_amounts[]" placeholder="כמות (גרם או מ'ל)" style="flex: 1;">
+                
                 <input type="text" name="ing_names[]" placeholder="שם המצרך" style="flex: 2;" required>
                 <input type="text" name="ing_descs[]" placeholder="תחליף אם יש" style="flex: 2;">
             </div>
@@ -274,9 +274,8 @@ function addIng() {
     const div = document.createElement('div');
     div.className = 'row';
     div.innerHTML = `
-        <input type="text" name="ing_amounts[]" placeholder=" כמות (גרם או מ'ל)" style="flex: 1;">
-        <input type="text" name="ing_names[]" placeholder="שם המצרך" style="flex: 2;" required>
-        <input type="text" name="ing_descs[]" placeholder="תחליף אם יש" style="flex: 2;">
+        <input type="text" name="ing_names[]" placeholder="שם המצרך וכמות (למשל: 2 כוסות קמח)" style="flex: 2;" required>
+        <input type="text" name="ing_descs[]" placeholder="תחליף אם יש" style="flex: 1;">
         <button type="button" class="btn-remove" onclick="this.parentElement.remove()">✕</button>
     `;
     document.getElementById('ing-area').appendChild(div);
